@@ -71,12 +71,9 @@ def fix_times(ds):
     return ds
 
 def granule(Dvolume):
-    print('in granule')
     n_tilts = 8
-    #data_dir = "/gpfs/wolf/atm124/proj-shared/gucxprecipradarS2.00/nc_files/" + month + "_nc/"
-    #out_dir = "/gpfs/wolf/atm124/proj-shared/gucxprecipradarS2.00/glue_files/" + month + "_glued/"
     month = Dvolume[0].split('/')[-2].split('_')[0]
-    out_dir = Dvolume[0].split('nc_files')[0] + "glue_files/" + month + "_glued/"
+    out_dir = '/gpfs/wolf2/arm/atm124/proj-shared/gucxprecipradarS2/glue_files/%s_glued/' % month
 
     # Read the base scan to determine if it can be read in
     if len(Dvolume) == 8:
@@ -120,7 +117,7 @@ def main(args):
     # Define directories
     month = args.month
     path = '/gpfs/wolf/atm124/proj-shared/gucxprecipradarS2.00/nc_files/%s_nc/*.nc' % month
-    out_path = '/gpfs/wolf/atm124/proj-shared/gucxprecipradarS2.00/glue_files/%s_glued/' % month
+    out_path = '/gpfs/wolf2/arm/atm124/proj-shared/gucxprecipradarS2/glue_files/%s_glued/' % month
 
     # Define files and determine volumes
     all_files = sorted(glob.glob(path))
@@ -146,8 +143,13 @@ def main(args):
     
     if args.serial is True:
         granule(volumes[0])
+        granule(volumes[1])
+        granule(volumes[2])
+        print("processing finished: ", time.strftime("%H:%M:%S"))
     else:
-        cluster = LocalCluster(n_workers=20, processes=True, threads_per_worker=1)
+        print("starting dask cluster...")
+        cluster = LocalCluster(n_workers=8,  threads_per_worker=1)
+        print(cluster)
         with Client(cluster) as c:
             results = c.map(granule, volumes)
             wait(results)
@@ -167,7 +169,7 @@ if __name__ == "__main__":
                         default=False,
                         dest='serial',
                         type=bool,
-                        help="Process in Serial"
+                        help="Process in Serial for testing"
     )
     args = parser.parse_args()
 
