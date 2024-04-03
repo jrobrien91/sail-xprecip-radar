@@ -12,6 +12,8 @@
 
 ### QPE
 - SQUIRE/CMAC Data
+- MRMS (for comparison)
+  - https://noaa-mrms-pds.s3.amazonaws.com/index.html#CONUS/MultiSensor_QPE_01H_Pass2_00.00/20211224/
 
 ### Verification
 - Sites
