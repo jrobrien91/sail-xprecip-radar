@@ -73,7 +73,7 @@ def fix_times(ds):
 def granule(Dvolume):
     n_tilts = 8
     month = Dvolume[0].split('/')[-2].split('_')[0]
-    out_dir = '/gpfs/wolf2/arm/atm124/proj-shared/gucxprecipradarS2/glue_files/%s_glued/' % month
+    out_dir = '/gpfs/wolf2/arm/atm124/proj-shared/gucxprecipradarS2_new/glue_files/%s_glued/' % month
 
     # Read the base scan to determine if it can be read in
     if len(Dvolume) == 8:
@@ -117,7 +117,7 @@ def main(args):
     # Define directories
     month = args.month
     path = '/gpfs/wolf/atm124/proj-shared/gucxprecipradarS2.00/nc_files/%s_nc/*.nc' % month
-    out_path = '/gpfs/wolf2/arm/atm124/proj-shared/gucxprecipradarS2/glue_files/%s_glued/' % month
+    out_path = '/gpfs/wolf2/arm/atm124/proj-shared/gucxprecipradarS2_new/glue_files/%s_glued/' % month
 
     # Define files and determine volumes
     all_files = sorted(glob.glob(path))
@@ -148,7 +148,7 @@ def main(args):
         print("processing finished: ", time.strftime("%H:%M:%S"))
     else:
         print("starting dask cluster...")
-        cluster = LocalCluster(n_workers=8,  threads_per_worker=1)
+        cluster = LocalCluster(n_workers=32,  threads_per_worker=1)
         print(cluster)
         with Client(cluster) as c:
             results = c.map(granule, volumes)
