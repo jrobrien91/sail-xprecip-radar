@@ -248,23 +248,6 @@ def match_datasets_act(column, ground, site, discard, resample='sum', DataSet=Fa
    
     return column
 
-#---------------------
-# Processing Variables
-#---------------------
-# Define the directory where the CSU-X Band CMAC2.0 files are located.
-RADAR_DIR = "/gpfs/wolf/atm124/proj-shared/gucxprecipradarcmacS2.c1/ppi/"
-# Define an output directory for downloaded ground instrumentation
-PLUVIO_DIR = '/gpfs/wolf/atm124/proj-shared/gucwbpluvio2M1.a1/'
-MET_DIR = '/gpfs/wolf/atm124/proj-shared/gucmetM1.b1/'
-LD_M1_DIR = '/gpfs/wolf/atm124/proj-shared/gucldM1.b1/'
-LD_S2_DIR = '/gpfs/wolf/atm124/proj-shared/gucldS2.b1/'
-SONDE_DIR = '/gpfs/wolf/atm124/proj-shared/gucsondewnpnM1.b1/'
-RWP_DIR = '/gpfs/wolf/atm124/proj-shared/guc915rwpprecipmomenthighM1.a0/'
-
-# Define ARM Username and ARM Token with ARM Live service for downloading ground instrumentation via ACT.DISCOVERY
-# With your ARM username, you can find your ARM Live token here: https://adc.arm.gov/armlive/
-ARM_USERNAME = os.getenv("ARM_USERNAME")
-ARM_TOKEN = os.getenv("ARM_TOKEN")
 
 def main(args):
     print("process start time: ", time.strftime("%H:%M:%S"))
@@ -280,13 +263,13 @@ def main(args):
     LD_M1_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucldM1.b1/*%s*.nc' % ndate
     LD_S2_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucldS2.b1/*%s*.nc' % ndate
     SONDE_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucsondewnpnM1.b1/*%s*.nc' % ndate
-    RWP_DIR = ''
-    CEIL_DIR = ""
+    RWP_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/guc915rwpprecipmeanlowM1.a1/*%s*.nc' % ndate
+    CEIL_DIR = "/gpfs/wolf2/arm/atm124/proj-shared/gucceilM1.b1/*%s*.nc" % ndate
 
     # define the number of days within the month
     d0 = datetime.datetime(year=int(ndate[0:4]), month=int(ndate[4:7]), day=1)
     d1 = datetime.datetime(year=int(ndate[0:4]), month=int(ndate[4:7])+1, day=1)
-    volumes = {'radar' : [], 'pluvio' : [], 'met' : [], 'ld_m1' : [], 
+    volumes = {'date': [], 'radar' : [], 'pluvio' : [], 'met' : [], 'ld_m1' : [], 
                'ld_s2' : [], 'sonde' : [], 'rwp' : [], 'ceil' : []}
     # iterate through files and collect together
     for i in range((d1-d0).days):
