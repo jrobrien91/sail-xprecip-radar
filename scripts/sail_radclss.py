@@ -275,14 +275,22 @@ def main(args):
     for i in range((d1-d0).days):
         if i < 9:
             #volumes['radar'].append(sorted(glob.glob(RADAR_DIR + 'gucxprecipradarcmacM1.c1.' + ndate + '0' + str(i+1) + '*.nc')))
-            volumes['pluvio'].append(sorted(glob.glob(PLUVIO_DIR + '*gucwbpluvio2M1.a1.' + DATE.replace('-','') + '*')))
+            day_of_month = ndate + '0' + str(i+1)
+            volumes['date'].append(day_of_month)
+            volumes['pluvio'].append(sorted(glob.glob(PLUVIO_DIR + '*gucwbpluvio2M1.a1.' + day_of_month + '*')))
+            volumes['pluvio'].append(sorted(glob.glob(RADAR_DIR + '*gucxprecipradarcmacM1.c1.' + day_of_month + '*')))
         else:
             #volumes['radar'].append(sorted(glob.glob(RADAR_DIR + 'gucxprecipradarcmacM1.c1.' + ndate + str(i+1) + '*.nc')))
+            day_of_month = ndate + '0' + str(i+1)
+            volumes['date'].append(day_of_month)
+            volumes['pluvio'].append(sorted(glob.glob(PLUVIO_DIR + '*gucwbpluvio2M1.a1.' + day_of_month + '*')))
+            volumes['pluvio'].append(sorted(glob.glob(RADAR_DIR + '*gucxprecipradarcmacM1.c1.' + day_of_month + '*')))
   
     if args.serial is True:
-        granule(volumes[0])
-        granule(volumes[1])
-        granule(volumes[2])
+        #granule(volumes[0])
+        #granule(volumes[1])
+        #granule(volumes[2])
+        print(volumes['pluvio'])
         print("processing finished: ", time.strftime("%H:%M:%S"))
     else:
         print("starting dask cluster...")
