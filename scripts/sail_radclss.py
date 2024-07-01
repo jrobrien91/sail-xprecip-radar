@@ -17,6 +17,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import xarray as xr
 import pandas as pd
+import argparse
 
 from dask.distributed import Client, LocalCluster
 
@@ -254,17 +255,17 @@ def main(args):
     # Define directories
     ndate = args.date
      # Define the directory where the CSU-X Band CMAC2.0 files are located.
-    RADAR_DIR = '/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradarcmacS2.c1/ppi/%s/*.nc' % ndate
+    RADAR_DIR = '/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradarcmacS2.c1/ppi/%s/' % ndate
     out_path = '/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradclssS2.c2/%s/' % ndate
 
     # Define an output directory for downloaded ground instrumentation
-    PLUVIO_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucwbpluvio2M1.a1/*%s*.nc' % ndate
-    MET_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucmetM1.b1/*%s*.nc' % ndate
-    LD_M1_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucldM1.b1/*%s*.nc' % ndate
-    LD_S2_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucldS2.b1/*%s*.nc' % ndate
-    SONDE_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucsondewnpnM1.b1/*%s*.nc' % ndate
-    RWP_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/guc915rwpprecipmeanlowM1.a1/*%s*.nc' % ndate
-    CEIL_DIR = "/gpfs/wolf2/arm/atm124/proj-shared/gucceilM1.b1/*%s*.nc" % ndate
+    PLUVIO_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucwbpluvio2M1.a1/'
+    MET_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucmetM1.b1/'
+    LD_M1_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucldM1.b1/'
+    LD_S2_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucldS2.b1/'
+    SONDE_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucsondewnpnM1.b1/'
+    RWP_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/guc915rwpprecipmeanlowM1.a1/'
+    CEIL_DIR = "/gpfs/wolf2/arm/atm124/proj-shared/gucceilM1.b1/"
 
     # define the number of days within the month
     d0 = datetime.datetime(year=int(ndate[0:4]), month=int(ndate[4:7]), day=1)
@@ -274,18 +275,32 @@ def main(args):
     # iterate through files and collect together
     for i in range((d1-d0).days):
         if i < 9:
-            #volumes['radar'].append(sorted(glob.glob(RADAR_DIR + 'gucxprecipradarcmacM1.c1.' + ndate + '0' + str(i+1) + '*.nc')))
             day_of_month = ndate + '0' + str(i+1)
-            volumes['date'].append(day_of_month)
-            volumes['pluvio'].append(sorted(glob.glob(PLUVIO_DIR + '*gucwbpluvio2M1.a1.' + day_of_month + '*')))
-            volumes['pluvio'].append(sorted(glob.glob(RADAR_DIR + '*gucxprecipradarcmacM1.c1.' + day_of_month + '*')))
+            print(day_of_month)
+            if day_of_month == "20220305":
+                volumes['date'].append(day_of_month)
+                volumes['pluvio'].append(sorted(glob.glob(PLUVIO_DIR + 'gucwbpluvio2M1.a1.' + day_of_month + '*.nc')))
+                volumes['radar'].append(sorted(glob.glob(RADAR_DIR + 'gucxprecipradarcmacS2.c1.' + day_of_month + '*')))
+                volumes['met'].append(sorted(glob.glob(MET_DIR + 'gucmetM1.b1.' + day_of_month + '*.cdf')))
+                volumes['ld_m1'].append(sorted(glob.glob(LD_M1_DIR + 'gucldM1.b1.' + day_of_month + '*.cdf')))
+                volumes['ld_s2'].append(sorted(glob.glob(LD_S2_DIR + 'gucldS2.b1.' + day_of_month + '*.cdf')))
+                volumes['rwp'].append(sorted(glob.glob(RWP_DIR + 'guc915rwpprecipmeanlowM1.a1.' + day_of_month + '*.nc')))
+                volumes['ceil'].append(sorted(glob.glob(CEIL_DIR + 'gucceilM1.b1.' + day_of_month + '*.nc')))
+                volumes['sonde'].append(sorted(glob.glob(SONDE_DIR + 'gucsondewnpnM1.b1.' + day_of_month + '*.cdf')))
         else:
-            #volumes['radar'].append(sorted(glob.glob(RADAR_DIR + 'gucxprecipradarcmacM1.c1.' + ndate + str(i+1) + '*.nc')))
-            day_of_month = ndate + '0' + str(i+1)
-            volumes['date'].append(day_of_month)
-            volumes['pluvio'].append(sorted(glob.glob(PLUVIO_DIR + '*gucwbpluvio2M1.a1.' + day_of_month + '*')))
-            volumes['pluvio'].append(sorted(glob.glob(RADAR_DIR + '*gucxprecipradarcmacM1.c1.' + day_of_month + '*')))
-  
+            day_of_month = ndate + str(i+1)
+            print(day_of_month)
+            if day_of_month == "20220317":
+                volumes['date'].append(day_of_month)
+                volumes['pluvio'].append(sorted(glob.glob(PLUVIO_DIR + 'gucwbpluvio2M1.a1.' + day_of_month + '*.nc')))
+                volumes['radar'].append(sorted(glob.glob(RADAR_DIR + 'gucxprecipradarcmacS2.c1.' + day_of_month + '*')))
+                volumes['met'].append(sorted(glob.glob(MET_DIR + 'gucmetM1.b1.' + day_of_month + '*.cdf')))
+                volumes['ld_m1'].append(sorted(glob.glob(LD_M1_DIR + 'gucldM1.b1.' + day_of_month + '*.cdf')))
+                volumes['ld_s2'].append(sorted(glob.glob(LD_S2_DIR + 'gucldS2.b1.' + day_of_month + '*.cdf')))
+                volumes['rwp'].append(sorted(glob.glob(RWP_DIR + 'guc915rwpprecipmeanlowM1.a1.' + day_of_month + '*.nc')))
+                volumes['ceil'].append(sorted(glob.glob(CEIL_DIR + 'gucceilM1.b1.' + day_of_month + '*.nc')))
+                volumes['sonde'].append(sorted(glob.glob(SONDE_DIR + 'gucsondewnpnM1.b1.' + day_of_month + '*.cdf')))
+ 
     if args.serial is True:
         #granule(volumes[0])
         #granule(volumes[1])
@@ -300,6 +315,8 @@ def main(args):
             results = c.map(granule, volumes)
             wait(results)
         print("processing finished: ", time.strftime("%H:%M:%S"))
+
+    return volumes
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -320,4 +337,4 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    main(args)
+    xout = main(args)
