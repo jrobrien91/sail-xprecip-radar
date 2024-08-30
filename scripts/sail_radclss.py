@@ -4,16 +4,19 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 import glob
 import time
-import os
 import datetime
+import argparse
+import logging
+import dask
 
 import numpy as np
 import matplotlib.pyplot as plt
 import xarray as xr
 import pandas as pd
-import argparse
 
-from dask.distributed import Client, LocalCluster, wait
+from dask.distributed import Client, LocalCluster, wait, as_completed
+dask.config.set({'logging.distributed': 'error'})
+
 from matplotlib.dates import DateFormatter
 from matplotlib import colors
 
@@ -392,12 +395,12 @@ def create_radclss_figure(radclss, height=3500, outdir=None):
     norm = colors.LogNorm(vmin=np.ma.masked_invalid(radclss.number_density_drops.values).min()+1,
                           vmax=np.ma.masked_invalid(radclss.number_density_drops.values).max()+2)
 
-    dsd_plot = ds_resampled.number_density_drops.plot(x="time",
-                                                      y="particle_size",
-                                                      norm=norm,
-                                                      cmap="pyart_HomeyerRainbow",
-                                                      add_colorbar=False,
-                                                      ax=ax2,
+    dsd_plot = radclss.sel(station="M1").number_density_drops.plot(x="time",
+                                                                   y="particle_size",
+                                                                   norm=norm,
+                                                                   cmap="pyart_HomeyerRainbow",
+                                                                   add_colorbar=False,
+                                                                   ax=ax2,
         )
     ax2.set_ylim(0, 15)
     ax2.set_ylabel("Particle Size \n (mm)", fontsize=14)
@@ -511,7 +514,6 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
     ds : Xarray Dataset
         Daily time-series of extracted columns saved into ARM formatted netCDF files. 
     """
-    print("IN RADCLSS: ", outdir)
     discard_var = {'LD' : ['base_time', 'time_offset', 'equivalent_radar_reflectivity_ott',
                            'laserband_amplitude', 'sensor_temperature', 
                            'heating_current', 'sensor_voltage', 
@@ -563,10 +565,17 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
         # Note - serial processing assumes processing is for a select date.
         #   and dask cluster has not been created to process a month at a time
         #   on cumulus. 
-        cluster = LocalCluster(n_workers=4, threads_per_worker=1)
+        ## Start up a Dask Cluster
+        my_data = []
+        cluster = LocalCluster(n_workers=4, silence_logs=logging.ERROR)
         with Client(cluster) as client:
-            future = client.map(subset_points, volumes['radar'], sonde=volumes['sonde'])
-            my_data = client.gather(future)
+            future = client.map(subset_points, volumes['radar'][:75], 
+                                sonde=volumes['sonde'])
+            for done_work in as_completed(future, with_results=False):
+                try:
+                    my_data.append(done_work.result())
+                except Exception as error:
+                    log.exception(error)
         ds = xr.concat([data for data in my_data if data], dim='time')
         del cluster, future, my_data
     else:
@@ -579,11 +588,15 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
                 columns.append(subset_points(rad))
         # Concatenate all extracted columns across time dimension to form daily timeseries
         ds = xr.concat([data for data in columns if data], dim='time')
+        # Free up Memory
+        del columns
     # Remove Global Attributes from the Column Extraction
     # Attributes make sense for single location, but not collection of sites. 
     ds.attrs = {}
     # Remove the Base_Time variable from extracted column
     del ds['base_time']
+    # Depending on how Dask is behaving, may be to resort time
+    ds = ds.sortby("time")
     print(volumes['date'] + " finish subset-points: ", time.strftime("%H:%M:%S"))
     
     # Pluvio Weighing Bucket Rain Gauge 
@@ -620,7 +633,7 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
         # Ceilometer 10m resolution
         ds = match_datasets_act(ds, volumes['ceil'], 'M1', discard=discard_var['ceil'])
     print(volumes['date'] + " finish in-situ match: ", time.strftime("%H:%M:%S"))
-    
+
     # Will create an xarray dataset which will contain the necessary meta data and variables. 
     out_ds = xr.open_dataset('/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradclssS2.c2/dod/radclss_dod.c2.v1.3.nc')
     # update the dod time dimensions with the radclss time
@@ -649,9 +662,9 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
             out_ds.to_netcdf(outdir + 'xprecipradarradclss.c2.' + volumes['date'] + '.000000.nc')
         else:
             out_ds.to_netcdf('xprecipradarradclss.c2.' + volumes['date'] + '.000000.nc')
-        status = "RadCLss SUCCESS: " + volumes['date']
+        status = ": RadCLss SUCCESS: " + volumes['date']
     except:
-        status = "RadCLss FAILURE: " + volumes['date']
+        status = ": RadCLss FAILURE: " + volumes['date']
 
     # create timeseries plot
     if postprocess == True:
@@ -662,7 +675,7 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
             print("PLOT FAILURE: " + volumes['date'])
     
     # free up memory
-    del ds, out_ds, columns
+    del ds, out_ds
 
     return status
 
@@ -671,8 +684,10 @@ def main(args):
     # Define directories
     ndate = args.date
      # Define the directory where the CSU-X Band CMAC2.0 files are located.
+    #RADAR_DIR = '/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/cmac_v3_with_cals/%s/' % ndate
     RADAR_DIR = '/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradarcmacS2.c1/ppi/%s/' % ndate
     out_path = args.outdir + '/%s/' % ndate
+    print("OUTPATH: ", out_path)
 
     # Define an output directory for downloaded ground instrumentation
     PLUVIO_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucwbpluvio2M1.a1/'
@@ -682,6 +697,13 @@ def main(args):
     SONDE_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucsondewnpnM1.b1/'
     RWP_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/guc915rwpprecipmeanlowM1.a1/'
     CEIL_DIR = "/gpfs/wolf2/arm/atm124/proj-shared/gucceilM1.b1/"
+    ##PLUVIO_DIR = '/Users/jrobrien/ARM/active/'
+    ##MET_DIR = '/Users/jrobrien/ARM/active/'
+    ##LD_M1_DIR = '/Users/jrobrien/ARM/active/'
+    ##LD_S2_DIR = '/Users/jrobrien/ARM/active/'
+    ##SONDE_DIR = '/Users/jrobrien/ARM/active/'
+    ##RWP_DIR = '/Users/jrobrien/ARM/active/'
+    ##CEIL_DIR = '/Users/jrobrien/ARM/active/'
 
     # define the number of days within the month
     d0 = datetime.datetime(year=int(ndate[0:4]), month=int(ndate[4:7]), day=1)
@@ -699,7 +721,7 @@ def main(args):
             day_of_month = ndate + '0' + str(i+1)
             volumes['date'].append(day_of_month)
             volumes['pluvio'].append(sorted(glob.glob(PLUVIO_DIR + 'gucwbpluvio2M1.a1.' + day_of_month + '*.nc')))
-            volumes['radar'].append(sorted(glob.glob(RADAR_DIR + 'gucxprecipradarcmacS2.c1.' + day_of_month + '*')))
+            volumes['radar'].append(sorted(glob.glob(RADAR_DIR + 'gucxprecipradarcmacppiS2.c1.' + day_of_month + '*')))
             volumes['met'].append(sorted(glob.glob(MET_DIR + 'gucmetM1.b1.' + day_of_month + '*.cdf')))
             volumes['ld_m1'].append(sorted(glob.glob(LD_M1_DIR + 'gucldM1.b1.' + day_of_month + '*.cdf')))
             volumes['ld_s2'].append(sorted(glob.glob(LD_S2_DIR + 'gucldS2.b1.' + day_of_month + '*.cdf')))
@@ -710,7 +732,7 @@ def main(args):
             day_of_month = ndate + str(i+1)
             volumes['date'].append(day_of_month)
             volumes['pluvio'].append(sorted(glob.glob(PLUVIO_DIR + 'gucwbpluvio2M1.a1.' + day_of_month + '*.nc')))
-            volumes['radar'].append(sorted(glob.glob(RADAR_DIR + 'gucxprecipradarcmacS2.c1.' + day_of_month + '*')))
+            volumes['radar'].append(sorted(glob.glob(RADAR_DIR + 'gucxprecipradarcmacppiS2.c1.' + day_of_month + '*')))
             volumes['met'].append(sorted(glob.glob(MET_DIR + 'gucmetM1.b1.' + day_of_month + '*.cdf')))
             volumes['ld_m1'].append(sorted(glob.glob(LD_M1_DIR + 'gucldM1.b1.' + day_of_month + '*.cdf')))
             volumes['ld_s2'].append(sorted(glob.glob(LD_S2_DIR + 'gucldS2.b1.' + day_of_month + '*.cdf')))
@@ -719,26 +741,38 @@ def main(args):
             volumes['sonde'].append(sorted(glob.glob(SONDE_DIR + 'gucsondewnpnM1.b1.' + day_of_month + '*.cdf')))
  
     if args.serial is True:
-        status = radclss(ith_val_subdict(volumes, 1), serial=True, outdir=out_path)
-        print(status)
-
+        for i in range(len(volumes['date'])):
+            print(ith_val_subdict(volumes, i), "\n")
+            if volumes['radar'][i]:
+                status = radclss(ith_val_subdict(volumes, i),
+                                 serial=True,
+                                 outdir=out_path)
         print("processing finished: ", time.strftime("%H:%M:%S"))
     else:
         bydate_list = []
         for i in range(len(volumes['date'])):
             bydate_list.append(ith_val_subdict(volumes, i))
         print("starting dask cluster...")
-        cluster = LocalCluster(n_workers=8,  threads_per_worker=1)
-        with Client(cluster) as c:
-            results = c.map(radclss, bydate_list, outdir=out_path, postprocess=False)
-            wait(results)
+
+        my_data = []
+        cluster = LocalCluster(n_workers=8, silence_logs=logging.ERROR)
+        with Client(cluster) as client:
+            results = client.map(radclss, bydate_list, outdir=out_path, postprocess=False)
+            for done_work in as_completed(results, with_results=False):
+                try:
+                    my_data.append(done_work.result())
+                except Exception as error:
+                    log.exception(error)
+
         print("processing finished: ", time.strftime("%H:%M:%S"))
         # close the cluster
-        del cluster
+        del cluster, my_data, bydate_list, results
+    # free up memory
+    del volumes
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-            description="Matched Radar Columns and In-Situ Sensors (RadCLss) Processing.\n" +
+            description="Matched Radar Columns and In-Situ Sensors (RadCLss) Processing." +
             "Extracts Radar columns above a given site and collocates with in-situ sensors")
 
     parser.add_argument("--date",
