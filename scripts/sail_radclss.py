@@ -561,16 +561,19 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
 
     print(volumes['date'] + " start subset-points: ", time.strftime("%H:%M:%S"))
     # loop over the input radar files and subtract columns
-    if serial == True:
+    if serial == False:
         # Note - serial processing assumes processing is for a select date.
         #   and dask cluster has not been created to process a month at a time
         #   on cumulus. 
         ## Start up a Dask Cluster
         my_data = []
-        cluster = LocalCluster(n_workers=4, silence_logs=logging.ERROR)
+        cluster = LocalCluster(n_workers=8, silence_logs=logging.ERROR)
         with Client(cluster) as client:
-            future = client.map(subset_points, volumes['radar'][:75], 
-                                sonde=volumes['sonde'])
+            if volumes['sonde']:
+                future = client.map(subset_points, volumes['radar'],
+                                    sonde=volumes['sonde'])
+            else:
+                future = client.map(subset_points, volumes['radar'])
             for done_work in as_completed(future, with_results=False):
                 try:
                     my_data.append(done_work.result())
@@ -683,7 +686,7 @@ def main(args):
     print("process start time: ", time.strftime("%H:%M:%S"))
     # Define directories
     ndate = args.date
-     # Define the directory where the CSU-X Band CMAC2.0 files are located.
+    # Define the directory where the CSU-X Band CMAC2.0 files are located.
     #RADAR_DIR = '/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/cmac_v3_with_cals/%s/' % ndate
     RADAR_DIR = '/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradarcmacS2.c1/ppi/%s/' % ndate
     out_path = args.outdir + '/%s/' % ndate
@@ -740,33 +743,17 @@ def main(args):
             volumes['ceil'].append(sorted(glob.glob(CEIL_DIR + 'gucceilM1.b1.' + day_of_month + '*.nc')))
             volumes['sonde'].append(sorted(glob.glob(SONDE_DIR + 'gucsondewnpnM1.b1.' + day_of_month + '*.cdf')))
  
-    if args.serial is True:
-        for i in range(len(volumes['date'])):
-            print(ith_val_subdict(volumes, i), "\n")
+    # Send volume to RadClss for processing
+    for i in range(len(volumes['date'])):
+            if args.verbose is True:
+                print(ith_val_subdict(volumes, i), "\n")
             if volumes['radar'][i]:
                 status = radclss(ith_val_subdict(volumes, i),
-                                 serial=True,
-                                 outdir=out_path)
-        print("processing finished: ", time.strftime("%H:%M:%S"))
-    else:
-        bydate_list = []
-        for i in range(len(volumes['date'])):
-            bydate_list.append(ith_val_subdict(volumes, i))
-        print("starting dask cluster...")
-
-        my_data = []
-        cluster = LocalCluster(n_workers=8, silence_logs=logging.ERROR)
-        with Client(cluster) as client:
-            results = client.map(radclss, bydate_list, outdir=out_path, postprocess=False)
-            for done_work in as_completed(results, with_results=False):
-                try:
-                    my_data.append(done_work.result())
-                except Exception as error:
-                    log.exception(error)
-
-        print("processing finished: ", time.strftime("%H:%M:%S"))
-        # close the cluster
-        del cluster, my_data, bydate_list, results
+                                 serial=args.serial,
+                                 outdir=out_path
+                )
+                print(volumes['date'][i], " - ", status)
+    print("processing finished: ", time.strftime("%H:%M:%S"))
     # free up memory
     del volumes
 
@@ -798,6 +785,12 @@ if __name__ == "__main__":
                         dest="postproc",
                         type=bool,
                         help="[bool|default=True] Create timeseries figures using generated RadClss files"
+    )
+    parser.add_argument("--verbose",
+                        default=False,
+                        dest="verbose",
+                        type=bool,
+                        help="[bool|default=False] Display file paths"
     )
     args = parser.parse_args()
 
