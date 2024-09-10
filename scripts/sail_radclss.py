@@ -598,10 +598,10 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
         cluster = LocalCluster(n_workers=8, silence_logs=logging.ERROR)
         with Client(cluster) as client:
             if volumes['sonde']:
-                future = client.map(subset_points, volumes['radar'][:50],
+                future = client.map(subset_points, volumes['radar'],
                                     sonde=volumes['sonde'])
             else:
-                future = client.map(subset_points, volumes['radar'][:50])
+                future = client.map(subset_points, volumes['radar'])
             for done_work in as_completed(future, with_results=False):
                 try:
                     my_data.append(done_work.result())
