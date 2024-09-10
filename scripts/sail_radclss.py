@@ -416,11 +416,11 @@ def create_radclss_figure(radclss, height=3500, outdir=None):
     # Drop Size Distribution
     ds_vmin = np.ma.masked_invalid(radclss.number_density_drops.values).min()+1
     ds_vmax = np.ma.masked_invalid(radclss.number_density_drops.values).max()+2
-    if ds_vmin or ds_vmax < 0:
+    if ds_vmax < 0:
         norm = colors.LogNorm(vmin=1,
                               vmax=10)
     else:
-        norm = colors.LogNorm(vmin=ds_vmin,
+        norm = colors.LogNorm(vmin=1,
                               vmax=ds_vmax)
 
     dsd_plot = radclss.sel(station="M1").number_density_drops.plot(x="time",
