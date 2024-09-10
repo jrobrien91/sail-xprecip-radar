@@ -607,7 +607,12 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
                     my_data.append(done_work.result())
                 except Exception as error:
                     logging.exception(error)
-        ds = xr.concat([data for data in my_data if data], dim='time')
+        # add check to see if column extraction works
+        if my_data.count(None) == len(my_data):
+            # all extractions failed
+            ds = None
+        else:
+            ds = xr.concat([data for data in my_data if data], dim='time')
         del cluster, future, my_data
     else:
         columns = []
@@ -617,122 +622,134 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
         else:
             for rad in volumes['radar']:
                 columns.append(subset_points(rad))
-        # Concatenate all extracted columns across time dimension to form daily timeseries
-        ds = xr.concat([data for data in columns if data], dim='time')
+        # add check to see if column extraction works
+        if columns.count(None) == len(columns):
+            # all extractions failed.
+            ds = None
+        else:
+            # Concatenate all extracted columns across time dimension to form daily timeseries
+            ds = xr.concat([data for data in columns if data], dim='time')
         # Free up Memory
         del columns
-    # Remove Global Attributes from the Column Extraction
-    # Attributes make sense for single location, but not collection of sites. 
-    ds.attrs = {}
-    # Remove the Base_Time variable from extracted column
-    del ds['base_time']
-    # Depending on how Dask is behaving, may be to resort time
-    ds = ds.sortby("time")
-    print(volumes['date'] + " finish subset-points: ", time.strftime("%H:%M:%S"))
+    # If successful column extraction, apply in-situ
+    if ds:
+        # Remove Global Attributes from the Column Extraction
+        # Attributes make sense for single location, but not collection of sites.
+        ds.attrs = {}
+        # Remove the Base_Time variable from extracted column
+        del ds['base_time']
+        # Depending on how Dask is behaving, may be to resort time
+        ds = ds.sortby("time")
+        print(volumes['date'] + " finish subset-points: ", time.strftime("%H:%M:%S"))
     
-    # Pluvio Weighing Bucket Rain Gauge 
-    if volumes['pluvio']:
-        pluv_site = volumes['pluvio'][0].split('gucwbpluvio2')[-1].split('.')[0]
-        # Call Match Datasets ACT 
-        ds = match_datasets_act(ds, volumes['pluvio'][0], pluv_site, discard=discard_var['Pluvio'])
-        del pluv_site
+        # Pluvio Weighing Bucket Rain Gauge
+        if volumes['pluvio']:
+            pluv_site = volumes['pluvio'][0].split('gucwbpluvio2')[-1].split('.')[0]
+            # Call Match Datasets ACT
+            ds = match_datasets_act(ds, volumes['pluvio'][0], pluv_site, discard=discard_var['Pluvio'])
+            del pluv_site
 
-    if volumes['met']:
-        # Surface Meteorological Station
-        met_site = volumes['met'][0].split('gucmet')[-1].split('.')[0]
-        # Call Match Datasets ACT
-        ds = match_datasets_act(ds, volumes['met'][0], met_site, discard=discard_var['Met'])
-        del met_site
+        if volumes['met']:
+            # Surface Meteorological Station
+            met_site = volumes['met'][0].split('gucmet')[-1].split('.')[0]
+            # Call Match Datasets ACT
+            ds = match_datasets_act(ds, volumes['met'][0], met_site, discard=discard_var['Met'])
+            del met_site
 
-    if volumes['ld_m1']:
-        # Laser Disdrometer - Main Site
-        ld_m1 = volumes['ld_m1'][0].split('gucld')[-1].split('.')[0]
-        ds = match_datasets_act(ds, volumes['ld_m1'][0], ld_m1, discard=discard_var['LD'])
-        del ld_m1
+        if volumes['ld_m1']:
+            # Laser Disdrometer - Main Site
+            ld_m1 = volumes['ld_m1'][0].split('gucld')[-1].split('.')[0]
+            ds = match_datasets_act(ds, volumes['ld_m1'][0], ld_m1, discard=discard_var['LD'])
+            del ld_m1
 
-    if volumes['ld_s2']:
-        # Laser Disdrometer - Supplemental Site
-        ld_s2 = volumes['ld_s2'][0].split('gucld')[-1].split('.')[0]
-        ds = match_datasets_act(ds, volumes['ld_s2'][0], ld_s2, discard=discard_var['LD'])
-        del ld_s2
+        if volumes['ld_s2']:
+            # Laser Disdrometer - Supplemental Site
+            ld_s2 = volumes['ld_s2'][0].split('gucld')[-1].split('.')[0]
+            ds = match_datasets_act(ds, volumes['ld_s2'][0], ld_s2, discard=discard_var['LD'])
+            del ld_s2
 
-    if volumes['rwp']:
-        # Radar Wind Profiler - Precipitation Mode (Mean)
-        ds = match_datasets_act(ds, volumes['rwp'], 'M1', resample='skip', discard=discard_var['RWP'])
+        if volumes['rwp']:
+            # Radar Wind Profiler - Precipitation Mode (Mean)
+            ds = match_datasets_act(ds, volumes['rwp'], 'M1', resample='skip', discard=discard_var['RWP'])
 
-    if volumes['ceil']:
-        # Ceilometer 10m resolution
-        ds = match_datasets_act(ds, volumes['ceil'], 'M1', discard=discard_var['ceil'])
-    print(volumes['date'] + " finish in-situ match: ", time.strftime("%H:%M:%S"))
+        if volumes['ceil']:
+            # Ceilometer 10m resolution
+            ds = match_datasets_act(ds, volumes['ceil'], 'M1', discard=discard_var['ceil'])
+        print(volumes['date'] + " finish in-situ match: ", time.strftime("%H:%M:%S"))
 
-    # Will create an xarray dataset which will contain the necessary meta data and variables. 
-    out_ds = xr.open_dataset('/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradclssS2.c2/dod/radclss_dod.c2.v1.4.nc')
-    ##out_ds = xr.open_dataset('/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/dod/radclss_dod.c2.v1.4.nc')
-    # update the dod time dimensions with the radclss time
-    out_ds = adjust_dod(out_ds, ds['time'].data.shape[0])
+        # Will create an xarray dataset which will contain the necessary meta data and variables.
+        out_ds = xr.open_dataset('/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradclssS2.c2/dod/radclss_dod.c2.v1.4.nc')
+        ##out_ds = xr.open_dataset('/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/dod/radclss_dod.c2.v1.4.nc')
+        # update the dod time dimensions with the radclss time
+        out_ds = adjust_dod(out_ds, ds['time'].data.shape[0])
 
-    # Transform the matched dataset for consistent dimensions
-    if volumes['ld_m1'] or volumes['ld_s2']:
-        ds = ds.transpose('time', 'height', 'station', 'particle_size', 'raw_fall_velocity')
-    else:
-        ds = ds.transpose("time", "height", "station")
-    # Output Dataset has correct data attributes, supplied by the DOD. 
-    # Update the output dataset variable values with the matched dataset. 
-    for var in out_ds.variables:
-        if var not in out_ds.dims:
-            # check to see if variable is within the matched dataset
-            # note: it may not be if file is missing.
-            if var in ds.variables:
-                out_ds[var].data = ds[var].data
-    if volumes['ld_m1'] or volumes['ld_s2']:
-        # Update the coordinates with the matched dataset values
-        out_ds = out_ds.assign_coords(time = ds['time'].data,
-                                      height = ds['height'].data,
-                                      station = ds['station'].data,
-                                      particle_size = ds['particle_size'].data,
-                                      raw_fall_velocity = ds['raw_fall_velocity'].data)
-    else:
-        default_particle = [0.062,  0.187,  0.312,  0.437,  0.562,  0.687,
-                            0.812,  0.937,  1.062,  1.187,  1.375,  1.625,
-                            1.875,  2.125,  2.375,  2.75,   3.25,   3.75,
-                            4.25,   4.75,   5.5,    6.5,    7.5,    8.5,
-                            9.5,    11.,    13.,    15.,    17.,    19.,
-                            21.5,   24.]
-        default_velocity = [0.05,  0.15,  0.25,  0.35,  0.45,  0.55,  0.65,
-                            0.75,  0.85,  0.95,  1.1,   1.3,   1.5,   1.7,
-                            1.9,   2.2,   2.6,   3.,    3.4,   3.8,   4.4,
-                            5.2,   6.,    6.8,   7.6,   8.8,  10.4,   12.,
-                            13.6,  15.2,  17.6,  20.8 ]
-
-        out_ds = out_ds.assign_coords(time = ds['time'].data,
-                                      height = ds['height'].data,
-                                      station = ds['station'].data,
-                                      particle_size = np.array(default_particle),
-                                      raw_fall_velocity = np.array(default_velocity)
-        )
-    
-    # write to file
-    try:
-        if outdir:
-            out_ds.to_netcdf(outdir + 'xprecipradarradclss.c2.' + volumes['date'] + '.000000.nc')
+        # Transform the matched dataset for consistent dimensions
+        if volumes['ld_m1'] or volumes['ld_s2']:
+            ds = ds.transpose('time', 'height', 'station', 'particle_size', 'raw_fall_velocity')
         else:
-            out_ds.to_netcdf('xprecipradarradclss.c2.' + volumes['date'] + '.000000.nc')
-        status = ": RadCLss SUCCESS: " + volumes['date']
-    except:
-        status = ": RadCLss FAILURE: " + volumes['date']
+            ds = ds.transpose("time", "height", "station")
+        # Output Dataset has correct data attributes, supplied by the DOD.
+        # Update the output dataset variable values with the matched dataset.
+        for var in out_ds.variables:
+            if var not in out_ds.dims:
+                # check to see if variable is within the matched dataset
+                # note: it may not be if file is missing.
+                if var in ds.variables:
+                    out_ds[var].data = ds[var].data
+        if volumes['ld_m1'] or volumes['ld_s2']:
+            # Update the coordinates with the matched dataset values
+            out_ds = out_ds.assign_coords(time = ds['time'].data,
+                                          height = ds['height'].data,
+                                          station = ds['station'].data,
+                                          particle_size = ds['particle_size'].data,
+                                          raw_fall_velocity = ds['raw_fall_velocity'].data)
+        else:
+            default_particle = [0.062,  0.187,  0.312,  0.437,  0.562,  0.687,
+                                0.812,  0.937,  1.062,  1.187,  1.375,  1.625,
+                                1.875,  2.125,  2.375,  2.75,   3.25,   3.75,
+                                4.25,   4.75,   5.5,    6.5,    7.5,    8.5,
+                                9.5,    11.,    13.,    15.,    17.,    19.,
+                                21.5,   24.]
+            default_velocity = [0.05,  0.15,  0.25,  0.35,  0.45,  0.55,  0.65,
+                                0.75,  0.85,  0.95,  1.1,   1.3,   1.5,   1.7,
+                                1.9,   2.2,   2.6,   3.,    3.4,   3.8,   4.4,
+                                5.2,   6.,    6.8,   7.6,   8.8,  10.4,   12.,
+                                13.6,  15.2,  17.6,  20.8 ]
 
-    # create timeseries plot
-    if postprocess == True:
+            out_ds = out_ds.assign_coords(time = ds['time'].data,
+                                          height = ds['height'].data,
+                                          station = ds['station'].data,
+                                          particle_size = np.array(default_particle),
+                                          raw_fall_velocity = np.array(default_velocity)
+            )
+
+        # write to file
         try:
-            plot_status = create_radclss_figure(out_ds, outdir=outdir)
-            print(plot_status)
+            if outdir:
+                out_ds.to_netcdf(outdir + 'xprecipradarradclss.c2.' + volumes['date'] + '.000000.nc')
+            else:
+                out_ds.to_netcdf('xprecipradarradclss.c2.' + volumes['date'] + '.000000.nc')
+            status = ": RadCLss SUCCESS: " + volumes['date']
         except:
-            print("PLOT FAILURE: " + volumes['date'])
-    
-    # free up memory
-    del ds, out_ds
+            status = ": RadCLss FAILURE: " + volumes['date']
 
-    return status
+        # create timeseries plot
+        if postprocess == True:
+            try:
+                plot_status = create_radclss_figure(out_ds, outdir=outdir)
+                print(plot_status)
+            except:
+                print("PLOT FAILURE: " + volumes['date'])
+    
+        # free up memory
+        del ds, out_ds
+
+    else:
+        # There is no column extraction
+        status = ": RadCLss FAILURE (All Columns Failed to Extract): "
+        del ds
+
+        return status
 
 def main(args):
     print("process start time: ", time.strftime("%H:%M:%S"))
