@@ -1,6 +1,7 @@
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 import glob
 import time
@@ -58,15 +59,17 @@ def subset_points(nfile, **kwargs):
     pumphouse_site = [-106.9502476, 38.9226741]
     M1 = [-106.987, 38.956158]
     snodgrass = [-106.978929, 38.926572]
+    S2 = [-106.943114, 38.897961]
 
-    sites = ["M1", "kettle_ponds", "avery_point", "pumphouse_site", "snodgrass"]
+    sites = ["M1", "kettle_ponds", "avery_point", "pumphouse_site", "snodgrass", "S2"]
 
     # Zip these together!
     lons, lats = list(zip(M1,
                           kettle_ponds,
                           avery_point,
                           pumphouse_site,
-                          snodgrass))
+                          snodgrass,
+                          S2))
     try:
         # Read in the file
         radar = pyart.io.read(nfile)
@@ -122,7 +125,11 @@ def subset_points(nfile, **kwargs):
             # NOTE: interpolating throughout Troposphere to match sonde to in the future
             #da = pyart.util.columnsect.get_field_location(radar, lat, lon).interp(height=np.arange(np.round(radar.altitude['data'][0]), 10100, 100))
             #da = pyart.util.columnsect.column_vertical_profile(radar, lat, lon).interp(height=np.arange(np.round(radar.altitude['data'][0]), 10100, 100))
-            da = pyart.util.columnsect.column_vertical_profile(radar, lat, lon).interp(height=np.arange(3150, 10050, 50))
+            try:
+                da = pyart.util.columnsect.column_vertical_profile(radar, lat, lon).interp(height=np.arange(3150, 10050, 50))
+            except ValueError:
+                da = pyart.util.columnsect.column_vertical_profile(radar, lat, lon)
+                da = adjust_dod(da, 0, height_fix=True)
             # Add the latitude and longitude of the extracted column
             da["latitude"], da["longitude"] = lat, lon
             # Time is based off the start of the radar volume
@@ -250,7 +257,7 @@ def match_datasets_act(column, ground, site, discard, resample='sum', DataSet=Fa
    
     return column
 
-def adjust_dod(ds, ntime):
+def adjust_dod(ds, ntime, height_fix=False):
     """
     the ability to create a DOD with adjustable dimensions via ACT is not 
     allowed on specific nodes
@@ -277,37 +284,52 @@ def adjust_dod(ds, ntime):
     
     # Get the global attributes and add to dataset
     newds.attrs = ds.attrs
-    nskip = ['lat', 'lon']
+    if height_fix is True:
+        nskip = ['latitude', 'longitude', 'base_time']
+        nheight = np.arange(3150, 10050, 50)
+    else:
+        nskip = ['lat', 'lon']
 
     # Assign the variables to the DataSet, expand the blank arrays to the input int time
     for var in ds.data_vars:
         if var not in nskip:
-            if len(ds[var].data.shape) == 4: 
-                x = np.full((ntime, ds[var].data.shape[1], 
-                             ds[var].data.shape[2], 
-                             ds[var].data.shape[3]), 
-                             ds[var].data[0, 0, 0, 0])
-            elif len(ds[var].data.shape) == 3:
-                x = np.full((ntime, ds[var].data.shape[1], 
-                             ds[var].data.shape[2]), ds[var].data[0, 0, 0])
-            elif len(ds[var].data.shape) == 2:
-                x = np.full((ntime, ds[var].data.shape[1]), ds[var].data[0, 0])
+            if height_fix is True:
+                x = np.full(len(nheight), ds[var].data[0])
+                newds[var] = ('height', x)
+                newds[var].attrs = ds[var].attrs
             else:
-                x = np.full((ntime), ds[var].data[0])
-            newds[var] = (ds[var].dims, x)
-            newds[var].attrs = ds[var].attrs
+                if len(ds[var].data.shape) == 4:
+                    x = np.full((ntime, ds[var].data.shape[1],
+                                 ds[var].data.shape[2],
+                                 ds[var].data.shape[3]),
+                                 ds[var].data[0, 0, 0, 0])
+                elif len(ds[var].data.shape) == 3:
+                    x = np.full((ntime, ds[var].data.shape[1],
+                                 ds[var].data.shape[2]), ds[var].data[0, 0, 0])
+                elif len(ds[var].data.shape) == 2:
+                    x = np.full((ntime, ds[var].data.shape[1]), ds[var].data[0, 0])
+                else:
+                    x = np.full((ntime), ds[var].data[0])
+                newds[var] = (ds[var].dims, x)
+                newds[var].attrs = ds[var].attrs
+    if height_fix is True:
+        newds['latitude'] = ds['latitude']
+        newds['longitude'] = ds['longitude']
+    else:
+        # Skipped the variables without time, add those back in
+        newds['lat'] = ds['lat']
+        newds['lon'] = ds['lon']
     
-    # Skipped the variables without time, add those back in
-    newds['lat'] = ds['lat']
-    newds['lon'] = ds['lon']
-    
-    # Assign Coordinates to the array
-    newds = newds.assign_coords(time=np.arange(0, newds['time'].shape[0]), 
-                                height=np.arange(0, newds['height'].shape[0]), 
-                                station=np.arange(0, 6),
-                                particle_size=np.arange(0, 32),
-                                raw_fall_velocity=np.arange(0, 32)
-                               )
+    if height_fix is True:
+        newds = newds.assign_coords(height=nheight)
+    else:
+        # Assign Coordinates to the array
+        newds = newds.assign_coords(time=np.arange(0, newds['time'].shape[0]),
+                                    height=np.arange(0, newds['height'].shape[0]),
+                                    station=np.arange(0, 6),
+                                    particle_size=np.arange(0, 32),
+                                    raw_fall_velocity=np.arange(0, 32)
+                                   )
     
     return newds
 
@@ -392,8 +414,14 @@ def create_radclss_figure(radclss, height=3500, outdir=None):
     #--------------------------------
 
     # Drop Size Distribution
-    norm = colors.LogNorm(vmin=np.ma.masked_invalid(radclss.number_density_drops.values).min()+1,
-                          vmax=np.ma.masked_invalid(radclss.number_density_drops.values).max()+2)
+    ds_vmin = np.ma.masked_invalid(radclss.number_density_drops.values).min()+1
+    ds_vmax = np.ma.masked_invalid(radclss.number_density_drops.values).max()+2
+    if ds_vmin or ds_vmax < 0:
+        norm = colors.LogNorm(vmin=1,
+                              vmax=10)
+    else:
+        norm = colors.LogNorm(vmin=ds_vmin,
+                              vmax=ds_vmax)
 
     dsd_plot = radclss.sel(station="M1").number_density_drops.plot(x="time",
                                                                    y="particle_size",
@@ -570,15 +598,15 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
         cluster = LocalCluster(n_workers=8, silence_logs=logging.ERROR)
         with Client(cluster) as client:
             if volumes['sonde']:
-                future = client.map(subset_points, volumes['radar'],
+                future = client.map(subset_points, volumes['radar'][:50],
                                     sonde=volumes['sonde'])
             else:
-                future = client.map(subset_points, volumes['radar'])
+                future = client.map(subset_points, volumes['radar'][:50])
             for done_work in as_completed(future, with_results=False):
                 try:
                     my_data.append(done_work.result())
                 except Exception as error:
-                    log.exception(error)
+                    logging.exception(error)
         ds = xr.concat([data for data in my_data if data], dim='time')
         del cluster, future, my_data
     else:
@@ -638,11 +666,16 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
     print(volumes['date'] + " finish in-situ match: ", time.strftime("%H:%M:%S"))
 
     # Will create an xarray dataset which will contain the necessary meta data and variables. 
-    out_ds = xr.open_dataset('/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradclssS2.c2/dod/radclss_dod.c2.v1.3.nc')
+    out_ds = xr.open_dataset('/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradclssS2.c2/dod/radclss_dod.c2.v1.4.nc')
+    ##out_ds = xr.open_dataset('/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/dod/radclss_dod.c2.v1.4.nc')
     # update the dod time dimensions with the radclss time
     out_ds = adjust_dod(out_ds, ds['time'].data.shape[0])
+
     # Transform the matched dataset for consistent dimensions
-    ds = ds.transpose('time', 'height', 'station', 'particle_size', 'raw_fall_velocity')
+    if volumes['ld_m1'] or volumes['ld_s2']:
+        ds = ds.transpose('time', 'height', 'station', 'particle_size', 'raw_fall_velocity')
+    else:
+        ds = ds.transpose("time", "height", "station")
     # Output Dataset has correct data attributes, supplied by the DOD. 
     # Update the output dataset variable values with the matched dataset. 
     for var in out_ds.variables:
@@ -651,13 +684,32 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
             # note: it may not be if file is missing.
             if var in ds.variables:
                 out_ds[var].data = ds[var].data
+    if volumes['ld_m1'] or volumes['ld_s2']:
+        # Update the coordinates with the matched dataset values
+        out_ds = out_ds.assign_coords(time = ds['time'].data,
+                                      height = ds['height'].data,
+                                      station = ds['station'].data,
+                                      particle_size = ds['particle_size'].data,
+                                      raw_fall_velocity = ds['raw_fall_velocity'].data)
+    else:
+        default_particle = [0.062,  0.187,  0.312,  0.437,  0.562,  0.687,
+                            0.812,  0.937,  1.062,  1.187,  1.375,  1.625,
+                            1.875,  2.125,  2.375,  2.75,   3.25,   3.75,
+                            4.25,   4.75,   5.5,    6.5,    7.5,    8.5,
+                            9.5,    11.,    13.,    15.,    17.,    19.,
+                            21.5,   24.]
+        default_velocity = [0.05,  0.15,  0.25,  0.35,  0.45,  0.55,  0.65,
+                            0.75,  0.85,  0.95,  1.1,   1.3,   1.5,   1.7,
+                            1.9,   2.2,   2.6,   3.,    3.4,   3.8,   4.4,
+                            5.2,   6.,    6.8,   7.6,   8.8,  10.4,   12.,
+                            13.6,  15.2,  17.6,  20.8 ]
 
-    # Update the coordinates with the matched dataset values
-    out_ds = out_ds.assign_coords(time = ds['time'].data, 
-                                  height = ds['height'].data, 
-                                  station = ds['station'].data, 
-                                  particle_size = ds['particle_size'].data,
-                                  raw_fall_velocity = ds['raw_fall_velocity'].data)
+        out_ds = out_ds.assign_coords(time = ds['time'].data,
+                                      height = ds['height'].data,
+                                      station = ds['station'].data,
+                                      particle_size = np.array(default_particle),
+                                      raw_fall_velocity = np.array(default_velocity)
+        )
     
     # write to file
     try:
@@ -687,7 +739,7 @@ def main(args):
     # Define directories
     ndate = args.date
     # Define the directory where the CSU-X Band CMAC2.0 files are located.
-    #RADAR_DIR = '/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/cmac_v3_with_cals/%s/' % ndate
+    ##RADAR_DIR = '/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/cmac_v3_with_cals/%s/' % ndate
     RADAR_DIR = '/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradarcmacS2.c1/ppi/%s/' % ndate
     out_path = args.outdir + '/%s/' % ndate
     print("OUTPATH: ", out_path)
@@ -745,14 +797,14 @@ def main(args):
  
     # Send volume to RadClss for processing
     for i in range(len(volumes['date'])):
-            if args.verbose is True:
-                print(ith_val_subdict(volumes, i), "\n")
-            if volumes['radar'][i]:
-                status = radclss(ith_val_subdict(volumes, i),
-                                 serial=args.serial,
-                                 outdir=out_path
-                )
-                print(volumes['date'][i], " - ", status)
+        if args.verbose is True:
+            print(ith_val_subdict(volumes, i), "\n")
+        if volumes['radar'][i]:
+            status = radclss(ith_val_subdict(volumes, i),
+                             serial=args.serial,
+                             outdir=out_path
+            )
+            print(volumes['date'][i], " - ", status)
     print("processing finished: ", time.strftime("%H:%M:%S"))
     # free up memory
     del volumes
