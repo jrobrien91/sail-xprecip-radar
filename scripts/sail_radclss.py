@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import xarray as xr
 import pandas as pd
 
-from dask.distributed import Client, LocalCluster, wait, as_completed
+from dask.distributed import Client, LocalCluster, wait, as_completed, fire_and_forget
 dask.config.set({'logging.distributed': 'error'})
 
 from matplotlib.dates import DateFormatter
@@ -254,6 +254,9 @@ def match_datasets_act(column, ground, site, discard, resample='sum', DataSet=Fa
         
     # Merge the two DataSets
     column = xr.merge([column, matched])
+
+    # Free up some memory
+    del grd_ds, matched
    
     return column
 
@@ -588,49 +591,22 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
               }
 
     print(volumes['date'] + " start subset-points: ", time.strftime("%H:%M:%S"))
-    # loop over the input radar files and subtract columns
-    if serial == False:
-        # Note - serial processing assumes processing is for a select date.
-        #   and dask cluster has not been created to process a month at a time
-        #   on cumulus. 
-        ## Start up a Dask Cluster
-        my_data = []
-        cluster = LocalCluster(n_workers=8, silence_logs=logging.ERROR)
-        with Client(cluster) as client:
-            if volumes['sonde']:
-                future = client.map(subset_points, volumes['radar'],
-                                    sonde=volumes['sonde'])
-            else:
-                future = client.map(subset_points, volumes['radar'])
-            for done_work in as_completed(future, with_results=False):
-                try:
-                    my_data.append(done_work.result())
-                except Exception as error:
-                    logging.exception(error)
-        # add check to see if column extraction works
-        if my_data.count(None) == len(my_data):
-            # all extractions failed
-            ds = None
-        else:
-            ds = xr.concat([data for data in my_data if data], dim='time')
-        del cluster, future, my_data
+    
+    # Call Subset Points
+    columns = []
+    if volumes['sonde']:
+        for rad in volumes['radar']:
+            columns.append(subset_points(rad, sonde=volumes['sonde']))
     else:
-        columns = []
-        if volumes['sonde']:
-            for rad in volumes['radar']:
-                columns.append(subset_points(rad, sonde=volumes['sonde']))
-        else:
-            for rad in volumes['radar']:
-                columns.append(subset_points(rad))
-        # add check to see if column extraction works
-        if columns.count(None) == len(columns):
-            # all extractions failed.
-            ds = None
-        else:
-            # Concatenate all extracted columns across time dimension to form daily timeseries
-            ds = xr.concat([data for data in columns if data], dim='time')
-        # Free up Memory
-        del columns
+        for rad in volumes['radar']:
+            columns.append(subset_points(rad))
+    try:
+        ds = xr.concat([data for data in columns if data], dim="time")
+    except ValueError:
+        ds = None
+    # Free up Memory
+    del columns
+
     # If successful column extraction, apply in-situ
     if ds:
         # Remove Global Attributes from the Column Extraction
@@ -749,7 +725,7 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
         status = ": RadCLss FAILURE (All Columns Failed to Extract): "
         del ds
 
-        return status
+    return status
 
 def main(args):
     print("process start time: ", time.strftime("%H:%M:%S"))
@@ -813,15 +789,34 @@ def main(args):
             volumes['sonde'].append(sorted(glob.glob(SONDE_DIR + 'gucsondewnpnM1.b1.' + day_of_month + '*.cdf')))
  
     # Send volume to RadClss for processing
-    for i in range(len(volumes['date'])):
-        if args.verbose is True:
-            print(ith_val_subdict(volumes, i), "\n")
-        if volumes['radar'][i]:
-            status = radclss(ith_val_subdict(volumes, i),
-                             serial=args.serial,
-                             outdir=out_path
-            )
-            print(volumes['date'][i], " - ", status)
+    if args.serial:
+        for i in range(len(volumes['date'])):
+            if i == 16:
+                print(ith_val_subdict(volumes, 16)) 
+                status = radclss(ith_val_subdict(volumes, i), outdir=out_path)
+                print(status)
+    else:
+        # define a list containing all the file volumes
+        file_mapping = []
+        j = 0
+        for i in range(len(volumes['date'])):
+            if i >=  16 and i < 18:
+                file_mapping.append(ith_val_subdict(volumes, i))
+                print(file_mapping[j])
+                print('\n')
+                j += 1
+        with LocalCluster(n_workers=20, processes=True, threads_per_worker=1, silence_logs=logging.ERROR,
+                          ) as cluster, Client(cluster) as client:
+            results = client.map(radclss, file_mapping, outdir=out_path)
+            #future = client.submit(radclss, ith_val_subdict(volumes, 16), outdir=out_path, retries=5)
+            #print(future.result())
+            wait(results)
+            
+            #for done_work in as_completed(future, with_results=False):
+            #    try:
+            #        print(done_work)
+            #    except Exception as error:
+            #        logging.exception(error)
     print("processing finished: ", time.strftime("%H:%M:%S"))
     # free up memory
     del volumes
