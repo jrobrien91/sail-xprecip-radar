@@ -203,8 +203,12 @@ def match_datasets_act(column, ground, site, discard, resample='sum', DataSet=Fa
         grd_ds = grd_ds.compute()
         # Check to see if file is the RWP, 
         if 'rwp' in ground[0].split('/')[-1]:
-            # adjust the RWP heights above ground level
-            grd_ds['height'] = grd_ds.height.data + grd_ds.alt.data
+            if len(ground) > 1:
+                # adjust the RWP heights above ground level
+                grd_ds['height'] = grd_ds.height.data + grd_ds.alt.data[0]
+            else:
+                # adjust the RWP heights above ground level
+                grd_ds['height'] = grd_ds.height.data + grd_ds.alt.data
         if 'ceil' in ground[0].split('/')[-1]:
             # correct ceilometer backscatter 
             grd_ds = act.corrections.correct_ceil(grd_ds, var_name='backscatter')
@@ -502,7 +506,7 @@ def create_radclss_figure(radclss, height=3500, outdir=None):
     return status
 
 
-def radclss(volumes, serial=False, outdir=None, postprocess=True):
+def radclss(volumes, serial=True, outdir=None, postprocess=True):
     """
     Extracted Radar Columns and In-Situ Sensors
 
@@ -594,12 +598,32 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
     
     # Call Subset Points
     columns = []
-    if volumes['sonde']:
-        for rad in volumes['radar']:
-            columns.append(subset_points(rad, sonde=volumes['sonde']))
+    if serial == False:
+        if volumes['sonde']:
+            with LocalCluster(n_workers=4, processes=True, threads_per_worker=1, silence_logs=logging.ERROR,
+                              ) as cluster, Client(cluster) as client:
+                results = client.map(subset_points, volumes["radar"][:60], sonde=volumes['sonde'])
+                for done_work in as_completed(results, with_results=False):
+                    try:
+                        columns.append(done_work.result())
+                    except Exception as error:
+                        log.exception(error)
+        else:
+            with LocalCluster(n_workers=4, processes=True, threads_per_worker=1, silence_logs=logging.ERROR,
+                              ) as cluster, Client(cluster) as client:
+                results = client.map(subset_points, volumes["radar"][:60])
+                for done_work in as_completed(results, with_results=False):
+                    try:
+                        columns.append(done_work.result())
+                    except Exception as error:
+                        log.exception(error)
     else:
-        for rad in volumes['radar']:
-            columns.append(subset_points(rad))
+        if volumes['sonde']:
+            for rad in volumes['radar'][:60]:
+                columns.append(subset_points(rad, sonde=volumes['sonde']))
+        else:
+            for rad in volumes['radar'][:60]:
+                columns.append(subset_points(rad))
     try:
         ds = xr.concat([data for data in columns if data], dim="time")
     except ValueError:
@@ -654,8 +678,8 @@ def radclss(volumes, serial=False, outdir=None, postprocess=True):
         print(volumes['date'] + " finish in-situ match: ", time.strftime("%H:%M:%S"))
 
         # Will create an xarray dataset which will contain the necessary meta data and variables.
-        out_ds = xr.open_dataset('/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradclssS2.c2/dod/radclss_dod.c2.v1.4.nc')
-        ##out_ds = xr.open_dataset('/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/dod/radclss_dod.c2.v1.4.nc')
+        ##out_ds = xr.open_dataset('/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradclssS2.c2/dod/radclss_dod.c2.v1.4.nc')
+        out_ds = xr.open_dataset('/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/dod/radclss_dod.c2.v1.4.nc')
         # update the dod time dimensions with the radclss time
         out_ds = adjust_dod(out_ds, ds['time'].data.shape[0])
 
@@ -732,26 +756,26 @@ def main(args):
     # Define directories
     ndate = args.date
     # Define the directory where the CSU-X Band CMAC2.0 files are located.
-    ##RADAR_DIR = '/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/cmac_v3_with_cals/%s/' % ndate
-    RADAR_DIR = '/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradarcmacS2.c1/ppi/%s/' % ndate
+    RADAR_DIR = '/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/cmac_v3_with_cals/%s/' % ndate
+    ##RADAR_DIR = '/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradarcmacS2.c1/ppi/%s/' % ndate
     out_path = args.outdir + '/%s/' % ndate
     print("OUTPATH: ", out_path)
 
     # Define an output directory for downloaded ground instrumentation
-    PLUVIO_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucwbpluvio2M1.a1/'
-    MET_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucmetM1.b1/'
-    LD_M1_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucldM1.b1/'
-    LD_S2_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucldS2.b1/'
-    SONDE_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucsondewnpnM1.b1/'
-    RWP_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/guc915rwpprecipmeanlowM1.a1/'
-    CEIL_DIR = "/gpfs/wolf2/arm/atm124/proj-shared/gucceilM1.b1/"
-    ##PLUVIO_DIR = '/Users/jrobrien/ARM/active/'
-    ##MET_DIR = '/Users/jrobrien/ARM/active/'
-    ##LD_M1_DIR = '/Users/jrobrien/ARM/active/'
-    ##LD_S2_DIR = '/Users/jrobrien/ARM/active/'
-    ##SONDE_DIR = '/Users/jrobrien/ARM/active/'
-    ##RWP_DIR = '/Users/jrobrien/ARM/active/'
-    ##CEIL_DIR = '/Users/jrobrien/ARM/active/'
+    ##PLUVIO_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucwbpluvio2M1.a1/'
+    ##MET_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucmetM1.b1/'
+    ##LD_M1_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucldM1.b1/'
+    ##LD_S2_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucldS2.b1/'
+    ##SONDE_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucsondewnpnM1.b1/'
+    ##RWP_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/guc915rwpprecipmeanlowM1.a1/'
+    ##CEIL_DIR = "/gpfs/wolf2/arm/atm124/proj-shared/gucceilM1.b1/"
+    PLUVIO_DIR = '/Users/jrobrien/ARM/active/'
+    MET_DIR = '/Users/jrobrien/ARM/active/'
+    LD_M1_DIR = '/Users/jrobrien/ARM/active/'
+    LD_S2_DIR = '/Users/jrobrien/ARM/active/'
+    SONDE_DIR = '/Users/jrobrien/ARM/active/'
+    RWP_DIR = '/Users/jrobrien/ARM/active/'
+    CEIL_DIR = '/Users/jrobrien/ARM/active/'
 
     # define the number of days within the month
     d0 = datetime.datetime(year=int(ndate[0:4]), month=int(ndate[4:7]), day=1)
@@ -764,62 +788,57 @@ def main(args):
         return {k: v[i] for k, v in input_dict.items()}
     
     # iterate through files and collect together
-    for i in range((d1-d0).days):
-        if i < 9:
-            day_of_month = ndate + '0' + str(i+1)
-            volumes['date'].append(day_of_month)
-            volumes['pluvio'].append(sorted(glob.glob(PLUVIO_DIR + 'gucwbpluvio2M1.a1.' + day_of_month + '*.nc')))
-            volumes['radar'].append(sorted(glob.glob(RADAR_DIR + 'gucxprecipradarcmacppiS2.c1.' + day_of_month + '*')))
-            volumes['met'].append(sorted(glob.glob(MET_DIR + 'gucmetM1.b1.' + day_of_month + '*.cdf')))
-            volumes['ld_m1'].append(sorted(glob.glob(LD_M1_DIR + 'gucldM1.b1.' + day_of_month + '*.cdf')))
-            volumes['ld_s2'].append(sorted(glob.glob(LD_S2_DIR + 'gucldS2.b1.' + day_of_month + '*.cdf')))
-            volumes['rwp'].append(sorted(glob.glob(RWP_DIR + 'guc915rwpprecipmeanlowM1.a1.' + day_of_month + '*.nc')))
-            volumes['ceil'].append(sorted(glob.glob(CEIL_DIR + 'gucceilM1.b1.' + day_of_month + '*.nc')))
-            volumes['sonde'].append(sorted(glob.glob(SONDE_DIR + 'gucsondewnpnM1.b1.' + day_of_month + '*.cdf')))
-        else:
-            day_of_month = ndate + str(i+1)
-            volumes['date'].append(day_of_month)
-            volumes['pluvio'].append(sorted(glob.glob(PLUVIO_DIR + 'gucwbpluvio2M1.a1.' + day_of_month + '*.nc')))
-            volumes['radar'].append(sorted(glob.glob(RADAR_DIR + 'gucxprecipradarcmacppiS2.c1.' + day_of_month + '*')))
-            volumes['met'].append(sorted(glob.glob(MET_DIR + 'gucmetM1.b1.' + day_of_month + '*.cdf')))
-            volumes['ld_m1'].append(sorted(glob.glob(LD_M1_DIR + 'gucldM1.b1.' + day_of_month + '*.cdf')))
-            volumes['ld_s2'].append(sorted(glob.glob(LD_S2_DIR + 'gucldS2.b1.' + day_of_month + '*.cdf')))
-            volumes['rwp'].append(sorted(glob.glob(RWP_DIR + 'guc915rwpprecipmeanlowM1.a1.' + day_of_month + '*.nc')))
-            volumes['ceil'].append(sorted(glob.glob(CEIL_DIR + 'gucceilM1.b1.' + day_of_month + '*.nc')))
-            volumes['sonde'].append(sorted(glob.glob(SONDE_DIR + 'gucsondewnpnM1.b1.' + day_of_month + '*.cdf')))
+    if args.array is True:
+        print("hey array job")
+        day_of_month = ndate + args.day
+        print("day of month: ", day_of_month)
+        volumes['date'].append(day_of_month)
+        volumes['pluvio'].append(sorted(glob.glob(PLUVIO_DIR + 'gucwbpluvio2M1.a1.' + day_of_month + '*.nc')))
+        volumes['radar'].append(sorted(glob.glob(RADAR_DIR + 'gucxprecipradarcmacppiS2.c1.' + day_of_month + '*')))
+        volumes['met'].append(sorted(glob.glob(MET_DIR + 'gucmetM1.b1.' + day_of_month + '*.cdf')))
+        volumes['ld_m1'].append(sorted(glob.glob(LD_M1_DIR + 'gucldM1.b1.' + day_of_month + '*.cdf')))
+        volumes['ld_s2'].append(sorted(glob.glob(LD_S2_DIR + 'gucldS2.b1.' + day_of_month + '*.cdf')))
+        volumes['rwp'].append(sorted(glob.glob(RWP_DIR + 'guc915rwpprecipmeanlowM1.a1.' + day_of_month + '*.nc')))
+        volumes['ceil'].append(sorted(glob.glob(CEIL_DIR + 'gucceilM1.b1.' + day_of_month + '*.nc')))
+        volumes['sonde'].append(sorted(glob.glob(SONDE_DIR + 'gucsondewnpnM1.b1.' + day_of_month + '*.cdf')))
+    else:
+        for i in range((d1-d0).days):
+            if i < 9:
+                day_of_month = ndate + '0' + str(i+1)
+                volumes['date'].append(day_of_month)
+                volumes['pluvio'].append(sorted(glob.glob(PLUVIO_DIR + 'gucwbpluvio2M1.a1.' + day_of_month + '*.nc')))
+                volumes['radar'].append(sorted(glob.glob(RADAR_DIR + 'gucxprecipradarcmacppiS2.c1.' + day_of_month + '*')))
+                volumes['met'].append(sorted(glob.glob(MET_DIR + 'gucmetM1.b1.' + day_of_month + '*.cdf')))
+                volumes['ld_m1'].append(sorted(glob.glob(LD_M1_DIR + 'gucldM1.b1.' + day_of_month + '*.cdf')))
+                volumes['ld_s2'].append(sorted(glob.glob(LD_S2_DIR + 'gucldS2.b1.' + day_of_month + '*.cdf')))
+                volumes['rwp'].append(sorted(glob.glob(RWP_DIR + 'guc915rwpprecipmeanlowM1.a1.' + day_of_month + '*.nc')))
+                volumes['ceil'].append(sorted(glob.glob(CEIL_DIR + 'gucceilM1.b1.' + day_of_month + '*.nc')))
+                volumes['sonde'].append(sorted(glob.glob(SONDE_DIR + 'gucsondewnpnM1.b1.' + day_of_month + '*.cdf')))
+            else:
+                day_of_month = ndate + str(i+1)
+                volumes['date'].append(day_of_month)
+                volumes['pluvio'].append(sorted(glob.glob(PLUVIO_DIR + 'gucwbpluvio2M1.a1.' + day_of_month + '*.nc')))
+                volumes['radar'].append(sorted(glob.glob(RADAR_DIR + 'gucxprecipradarcmacppiS2.c1.' + day_of_month + '*')))
+                volumes['met'].append(sorted(glob.glob(MET_DIR + 'gucmetM1.b1.' + day_of_month + '*.cdf')))
+                volumes['ld_m1'].append(sorted(glob.glob(LD_M1_DIR + 'gucldM1.b1.' + day_of_month + '*.cdf')))
+                volumes['ld_s2'].append(sorted(glob.glob(LD_S2_DIR + 'gucldS2.b1.' + day_of_month + '*.cdf')))
+                volumes['rwp'].append(sorted(glob.glob(RWP_DIR + 'guc915rwpprecipmeanlowM1.a1.' + day_of_month + '*.nc')))
+                volumes['ceil'].append(sorted(glob.glob(CEIL_DIR + 'gucceilM1.b1.' + day_of_month + '*.nc')))
+                volumes['sonde'].append(sorted(glob.glob(SONDE_DIR + 'gucsondewnpnM1.b1.' + day_of_month + '*.cdf')))
  
     # Send volume to RadClss for processing
-    if args.serial:
-        for i in range(len(volumes['date'])):
-            if i == 16:
-                print(ith_val_subdict(volumes, 16)) 
-                status = radclss(ith_val_subdict(volumes, i), outdir=out_path)
-                print(status)
-    else:
-        # define a list containing all the file volumes
-        file_mapping = []
-        j = 0
-        for i in range(len(volumes['date'])):
-            if i >=  16 and i < 18:
-                file_mapping.append(ith_val_subdict(volumes, i))
-                print(file_mapping[j])
-                print('\n')
-                j += 1
-        with LocalCluster(n_workers=20, processes=True, threads_per_worker=1, silence_logs=logging.ERROR,
-                          ) as cluster, Client(cluster) as client:
-            results = client.map(radclss, file_mapping, outdir=out_path)
-            #future = client.submit(radclss, ith_val_subdict(volumes, 16), outdir=out_path, retries=5)
-            #print(future.result())
-            wait(results)
-            
-            #for done_work in as_completed(future, with_results=False):
-            #    try:
-            #        print(done_work)
-            #    except Exception as error:
-            #        logging.exception(error)
+    for i in range(len(volumes['date'])):
+        nvol = ith_val_subdict(volumes, i)
+        if nvol["radar"]:
+            if args.verbose:
+                print("serial - ", args.serial)
+                print(volumes['date'][i], nvol["radar"])
+            status = radclss(nvol, outdir=out_path, serial=args.serial)
+            print(status)
+ 
     print("processing finished: ", time.strftime("%H:%M:%S"))
     # free up memory
-    del volumes
+    del volumes, nvol
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -832,8 +851,19 @@ if __name__ == "__main__":
                         type=str,
                         help="[str|YYYMM format] Specific Month to Process"
     )
-    parser.add_argument("--serial",
+    parser.add_argument("--array",
                         default=False,
+                        dest="array",
+                        type=bool,
+                        help="[bool|default=False] If Set, check for specific days to process")
+    parser.add_argument("--day",
+                        default="01",
+                        dest='day',
+                        type=str,
+                        help="[str|DD format] Specific Day to Process. Checks for `array` first"
+                        )
+    parser.add_argument("--serial",
+                        default=True,
                         dest='serial',
                         type=bool,
                         help="[bool|default=False] Process in Serial for testing"
