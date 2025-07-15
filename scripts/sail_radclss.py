@@ -602,7 +602,7 @@ def radclss(volumes, serial=True, outdir=None, postprocess=True):
         if volumes['sonde']:
             with LocalCluster(n_workers=4, processes=True, threads_per_worker=1, silence_logs=logging.ERROR,
                               ) as cluster, Client(cluster) as client:
-                results = client.map(subset_points, volumes["radar"][:60], sonde=volumes['sonde'])
+                results = client.map(subset_points, volumes["radar"], sonde=volumes['sonde'])
                 for done_work in as_completed(results, with_results=False):
                     try:
                         columns.append(done_work.result())
@@ -611,7 +611,7 @@ def radclss(volumes, serial=True, outdir=None, postprocess=True):
         else:
             with LocalCluster(n_workers=4, processes=True, threads_per_worker=1, silence_logs=logging.ERROR,
                               ) as cluster, Client(cluster) as client:
-                results = client.map(subset_points, volumes["radar"][:60])
+                results = client.map(subset_points, volumes["radar"])
                 for done_work in as_completed(results, with_results=False):
                     try:
                         columns.append(done_work.result())
@@ -619,10 +619,10 @@ def radclss(volumes, serial=True, outdir=None, postprocess=True):
                         log.exception(error)
     else:
         if volumes['sonde']:
-            for rad in volumes['radar'][:60]:
+            for rad in volumes['radar']:
                 columns.append(subset_points(rad, sonde=volumes['sonde']))
         else:
-            for rad in volumes['radar'][:60]:
+            for rad in volumes['radar']:
                 columns.append(subset_points(rad))
     try:
         ds = xr.concat([data for data in columns if data], dim="time")
@@ -678,8 +678,8 @@ def radclss(volumes, serial=True, outdir=None, postprocess=True):
         print(volumes['date'] + " finish in-situ match: ", time.strftime("%H:%M:%S"))
 
         # Will create an xarray dataset which will contain the necessary meta data and variables.
-        ##out_ds = xr.open_dataset('/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradclssS2.c2/dod/radclss_dod.c2.v1.4.nc')
-        out_ds = xr.open_dataset('/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/dod/radclss_dod.c2.v1.4.nc')
+        out_ds = xr.open_dataset('/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradclssS2.c2/dod/radclss_dod.c2.v1.4.nc')
+        ##out_ds = xr.open_dataset('/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/dod/radclss_dod.c2.v1.4.nc')
         # update the dod time dimensions with the radclss time
         out_ds = adjust_dod(out_ds, ds['time'].data.shape[0])
 
@@ -756,30 +756,36 @@ def main(args):
     # Define directories
     ndate = args.date
     # Define the directory where the CSU-X Band CMAC2.0 files are located.
-    RADAR_DIR = '/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/cmac_v3_with_cals/%s/' % ndate
-    ##RADAR_DIR = '/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradarcmacS2.c1/ppi/%s/' % ndate
+    ##RADAR_DIR = '/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/cmac_v3_with_cals/%s/' % ndate
+    RADAR_DIR = '/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradarcmacS2.c1/ppi/%s/' % ndate
     out_path = args.outdir + '/%s/' % ndate
+    print("RADAR DIR: ", RADAR_DIR)
     print("OUTPATH: ", out_path)
+    print("VERBOSE: ", args.verbose)
 
     # Define an output directory for downloaded ground instrumentation
-    ##PLUVIO_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucwbpluvio2M1.a1/'
-    ##MET_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucmetM1.b1/'
-    ##LD_M1_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucldM1.b1/'
-    ##LD_S2_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucldS2.b1/'
-    ##SONDE_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucsondewnpnM1.b1/'
-    ##RWP_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/guc915rwpprecipmeanlowM1.a1/'
-    ##CEIL_DIR = "/gpfs/wolf2/arm/atm124/proj-shared/gucceilM1.b1/"
-    PLUVIO_DIR = '/Users/jrobrien/ARM/active/'
-    MET_DIR = '/Users/jrobrien/ARM/active/'
-    LD_M1_DIR = '/Users/jrobrien/ARM/active/'
-    LD_S2_DIR = '/Users/jrobrien/ARM/active/'
-    SONDE_DIR = '/Users/jrobrien/ARM/active/'
-    RWP_DIR = '/Users/jrobrien/ARM/active/'
-    CEIL_DIR = '/Users/jrobrien/ARM/active/'
+    PLUVIO_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucwbpluvio2M1.a1/'
+    MET_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucmetM1.b1/'
+    LD_M1_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucldM1.b1/'
+    LD_S2_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucldS2.b1/'
+    SONDE_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/gucsondewnpnM1.b1/'
+    RWP_DIR = '/gpfs/wolf2/arm/atm124/proj-shared/guc915rwpprecipmeanlowM1.a1/'
+    CEIL_DIR = "/gpfs/wolf2/arm/atm124/proj-shared/gucceilM1.b1/"
+    ##PLUVIO_DIR = '/Users/jrobrien/ARM/active/'
+    ##MET_DIR = '/Users/jrobrien/ARM/active/'
+    ##LD_M1_DIR = '/Users/jrobrien/ARM/active/'
+    ##LD_S2_DIR = '/Users/jrobrien/ARM/active/'
+    ##SONDE_DIR = '/Users/jrobrien/ARM/active/'
+    ##RWP_DIR = '/Users/jrobrien/ARM/active/'
+    ##CEIL_DIR = '/Users/jrobrien/ARM/active/'
 
     # define the number of days within the month
-    d0 = datetime.datetime(year=int(ndate[0:4]), month=int(ndate[4:7]), day=1)
-    d1 = datetime.datetime(year=int(ndate[0:4]), month=int(ndate[4:7])+1, day=1)
+    if int(ndate[4:7]) == 12:
+        d0 = datetime.datetime(year=int(ndate[0:4]), month=int(ndate[4:7]), day=1)
+        d1 = datetime.datetime(year=int(ndate[0:4])+1, month=1, day=1)
+    else:
+        d0 = datetime.datetime(year=int(ndate[0:4]), month=int(ndate[4:7]), day=1)
+        d1 = datetime.datetime(year=int(ndate[0:4]), month=int(ndate[4:7])+1, day=1)
     volumes = {'date': [], 'radar' : [], 'pluvio' : [], 'met' : [], 'ld_m1' : [], 
                'ld_s2' : [], 'sonde' : [], 'rwp' : [], 'ceil' : []}
     
@@ -789,7 +795,6 @@ def main(args):
     
     # iterate through files and collect together
     if args.array is True:
-        print("hey array job")
         day_of_month = ndate + args.day
         print("day of month: ", day_of_month)
         volumes['date'].append(day_of_month)
@@ -828,6 +833,8 @@ def main(args):
  
     # Send volume to RadClss for processing
     for i in range(len(volumes['date'])):
+        print(volumes['date'][i])
+        print(volumes['radar'][i])
         nvol = ith_val_subdict(volumes, i)
         if nvol["radar"]:
             if args.verbose:
