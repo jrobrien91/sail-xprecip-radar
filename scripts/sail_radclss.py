@@ -25,6 +25,34 @@ import pyart
 import act
 
 #-----------------
+# Define Constants
+#-----------------
+
+# Height gates the radar columns and the height-resolved in-situ sensors
+# are interpolated onto. Defined once so the column extraction and the
+# ground-instrument matching can never drift apart.
+RADCLSS_HEIGHTS = np.arange(3150, 10050, 50)
+
+# Missing value code declared by the RadCLss DOD (xprecipradarradclss-c2).
+# Every variable is written with this as both `_FillValue` and `missing_value`
+# so the declared value always matches what is actually stored in the file.
+MISSING_VALUE = -999999.0
+
+# In-situ variables that are a true per-interval accumulation, and so must be
+# summed when resampled onto the 5 minute radar volume cadence. Every other
+# variable is a state or a rate and must be averaged -- summing those inflates
+# them by the number of input samples per window (5x for the 1 minute MET,
+# Pluvio and laser disdrometer streams, ~19x for the 16 second ceilometer).
+SUM_VARS = frozenset({
+    "accum_nrt",
+    "accum_rtnrt",
+    "intensity_rt",
+    "intensity_rtnrt",
+    "tbrg_precip_total",
+    "tbrg_precip_total_corr",
+})
+
+#-----------------
 # Define Functions
 #-----------------
 
@@ -119,6 +147,15 @@ def subset_points(nfile, **kwargs):
             del radar_start, sonde_start, ds_sonde
             del z_dict, sonde_dict
         
+        # Time is based off the start of the radar volume.
+        # Guard against volumes whose stored times cannot be interpreted as
+        # milliseconds since the epoch (a handful of glue files carry seconds
+        # instead, which decodes to Jan 1970 and drags the file timeline with it).
+        dt = volume_time(nfile, radar)
+        if dt is None:
+            del radar
+            return None
+
         column_list = []
         for lat, lon in zip(lats, lons):
             # Make sure we are interpolating from the radar's location above sea level
@@ -126,20 +163,33 @@ def subset_points(nfile, **kwargs):
             #da = pyart.util.columnsect.get_field_location(radar, lat, lon).interp(height=np.arange(np.round(radar.altitude['data'][0]), 10100, 100))
             #da = pyart.util.columnsect.column_vertical_profile(radar, lat, lon).interp(height=np.arange(np.round(radar.altitude['data'][0]), 10100, 100))
             try:
-                da = pyart.util.columnsect.column_vertical_profile(radar, lat, lon).interp(height=np.arange(3150, 10050, 50))
+                da = (pyart.util.columnsect.column_vertical_profile(radar, lat, lon)
+                      .interp(height=RADCLSS_HEIGHTS))
             except ValueError:
+                # The column can contain non-finite or unsorted height gates, which
+                # `interp` refuses. Interpolate across whatever gates are valid rather
+                # than falling back on a constant-filled profile.
                 da = pyart.util.columnsect.column_vertical_profile(radar, lat, lon)
-                da = adjust_dod(da, 0, height_fix=True)
+                valid = np.isfinite(da["height"])
+                if int(valid.sum()) > 0:
+                    da = (da.sel(height=valid)
+                            .sortby("height")
+                            .interp(height=RADCLSS_HEIGHTS))
+                else:
+                    target_height = xr.DataArray(RADCLSS_HEIGHTS, dims="height", name="height")
+                    da = da.reindex(height=target_height)
+
             # Add the latitude and longitude of the extracted column
-            da["latitude"], da["longitude"] = lat, lon
-            # Time is based off the start of the radar volume
-            dt = pd.to_datetime(radar.time["data"], unit='ms')[-1]
+            da["lat"], da["lon"] = lat, lon
             da["time"] = [dt]
             column_list.append(da)
-        
-        # Concatenate the extracted radar columns for this scan across all sites    
+
+        # Concatenate the extracted radar columns for this scan across all sites
         ds = xr.concat(column_list, dim='station')
         ds["station"] = sites
+        # lat/lon are per-station constants; strip the redundant time dimension
+        ds["lat"] = ds["lat"].isel(time=0, drop=True)
+        ds["lon"] = ds["lon"].isel(time=0, drop=True)
         # Add attributes for Time, Latitude, Longitude, and Sites
         ds.time.attrs.update(long_name=('Time in Seconds that Cooresponds to the Start'
                                         + " of each Individual Radar Volume Scan before"
@@ -147,15 +197,63 @@ def subset_points(nfile, **kwargs):
                              description=('Time in Seconds that Cooresponds to the Minimum'
                                           + ' Height Gate'))
         ds.station.attrs.update(long_name="SAIL/SPLASH In-Situ Ground Observation Station Identifers")
-        ds.latitude.attrs.update(long_name='Latitude of SAIL Ground Observation Site',
-                                 units='Degrees North')
-        ds.longitude.attrs.update(long_name='Longitude of SAIL Ground Observation Site',
-                                 units='Degrees East')
+        ds.lat.attrs.update(long_name='Latitude of SAIL Ground Observation Site',
+                            units='Degrees North')
+        ds.lon.attrs.update(long_name='Longitude of SAIL Ground Observation Site',
+                            units='Degrees East')
         # delete the radar to free up memory
         del radar, column_list, da
     return ds
 
-def match_datasets_act(column, ground, site, discard, resample='sum', DataSet=False):
+def volume_time(nfile, radar):
+    """
+    Determine the start time of a radar volume, cross-checked against the
+    timestamp in the filename.
+
+    The glued .b1 volumes store `time` as milliseconds since the epoch, but a
+    small number of them were written with seconds instead. Decoding those as
+    milliseconds places the volume in January 1970, which then becomes the
+    `units` epoch of the daily RadCLss file and makes the whole file timeline
+    span 1970 to the present.
+
+    Parameters
+    ----------
+    nfile : str
+        Path to the radar file. The filename supplies the expected date in
+        `.YYYYmmdd.HHMMSS.` form.
+    radar : pyart.core.Radar
+        Radar object the volume time is read from.
+
+    Returns
+    -------
+    dt : pandas.Timestamp or None
+        Start time of the volume, or None if no sane time could be recovered.
+    """
+    try:
+        expected = datetime.datetime.strptime(
+            nfile.split('/')[-1].split('.')[-3] + '.' + nfile.split('/')[-1].split('.')[-2],
+            '%Y%m%d.%H%M%S'
+        )
+    except (ValueError, IndexError):
+        expected = None
+
+    try:
+        dt = pd.to_datetime(radar.time["data"], unit='ms')[-1]
+    except (ValueError, OverflowError, IndexError):
+        dt = None
+
+    if expected is None:
+        return dt
+
+    # Accept the stored time only when it lands on the day the filename claims.
+    if dt is not None and abs(dt - pd.Timestamp(expected)) <= pd.Timedelta(days=1):
+        return dt
+
+    print("WARNING: volume time " + str(dt) + " disagrees with filename "
+          + nfile.split('/')[-1] + "; using the filename timestamp")
+    return pd.Timestamp(expected)
+
+def match_datasets_act(column, ground, site, discard, resample='auto', DataSet=False):
     """
     Time synchronization of a Ground Instrumentation Dataset to 
     a Radar Column for Specific Locations using the ARM ACT package
@@ -179,10 +277,11 @@ def match_datasets_act(column, ground, site, discard, resample='sum', DataSet=Fa
         removed from the xarray DataSet. 
     
     resample : str
-        Mathematical operational for resampling ground instrumentation to the radar time.
-        Default is to sum the data across the resampling period. Checks for 'mean' or 
-        to 'skip' altogether. 
-    
+        Resampling behaviour. The default, 'auto', resamples each variable
+        individually: accumulation variables (see SUM_VARS) are summed across the
+        5 minute window and every other variable is averaged. Set to 'skip' to
+        interpolate onto the radar time without resampling first.
+
     DataSet : boolean
         Boolean flag to determine if ground input is an Xarray Dataset.
         Set to True if ground input is Xarray DataSet. 
@@ -220,24 +319,40 @@ def match_datasets_act(column, ground, site, discard, resample='sum', DataSet=Fa
     if 'base_time' in grd_ds.data_vars:
         del grd_ds['base_time']
         
-    # Check to see if height is a dimension within the ground instrumentation. 
+    # Check to see if height is a dimension within the ground instrumentation.
     # If so, first interpolate heights to match radar, before interpolating time.
     if 'height' in grd_ds.dims:
-        grd_ds = grd_ds.interp(height=np.arange(3150, 10050, 50), method='linear')
-        
-    # Resample the ground data to 5 min and interpolate to the CSU X-Band time. 
+        grd_ds = grd_ds.interp(height=RADCLSS_HEIGHTS, method='linear')
+
+    # Resample the ground data to 5 min and interpolate to the CSU X-Band time.
+    # Resample each variable on its own: summing a state variable (pressure,
+    # temperature, cloud base height, ...) across the window multiplies it by the
+    # number of input samples, so only true accumulations are summed.
     # Keep data variable attributes to help distingish between instruments/locations
-    if resample.split('=')[-1] == 'mean':
-        matched = grd_ds.resample(time='5Min', 
-                                  closed='right').mean(keep_attrs=True).interp(time=column.time, 
-                                                                               method='linear')
-    elif resample.split('=')[-1] == 'skip':
+    if resample.split('=')[-1] == 'skip':
         matched = grd_ds.interp(time=column.time, method='linear')
     else:
-        matched = grd_ds.resample(time='5Min', 
-                                  closed='right').sum(keep_attrs=True).interp(time=column.time, 
-                                                                              method='linear')
-    
+        # Build the matched dataset one variable at a time
+        matched = xr.Dataset()
+        for var_name, da in grd_ds.data_vars.items():
+            # Variables without a time dimension cannot be resampled onto the
+            # radar cadence; carry them through untouched
+            if 'time' not in da.dims:
+                matched[var_name] = da
+                continue
+            resampled = da.resample(time='5Min', closed='right')
+            if var_name in SUM_VARS:
+                interpol_da = resampled.sum(keep_attrs=True)
+            else:
+                interpol_da = resampled.mean(keep_attrs=True)
+            interpol_da = interpol_da.interp(time=column.time, method='linear')
+            # The referenced QC companions were dropped on read; drop the dangling
+            # reference so the output does not point at variables it does not have
+            if 'ancillary_variables' in interpol_da.attrs:
+                del interpol_da.attrs['ancillary_variables']
+            matched[var_name] = interpol_da
+        matched.attrs = grd_ds.attrs
+
     # Add SAIL site location as a dimension for the Pluvio data
     matched = matched.assign_coords(coords=dict(station=site))
     matched = matched.expand_dims('station')
@@ -254,8 +369,8 @@ def match_datasets_act(column, ground, site, discard, resample='sum', DataSet=Fa
     # global attributes will be lost on merging into the matched dataset.
     # Need to keep as many references and descriptors as possible
     for var in matched.data_vars:
-        matched[var].attrs.update(source=matched.datastream)
-        
+        matched[var].attrs.update(source=grd_ds.datastream)
+
     # Merge the two DataSets
     column = xr.merge([column, matched])
 
@@ -264,81 +379,96 @@ def match_datasets_act(column, ground, site, discard, resample='sum', DataSet=Fa
    
     return column
 
-def adjust_dod(ds, ntime, height_fix=False):
+def adjust_radclss_dod(radclss, dod):
     """
-    the ability to create a DOD with adjustable dimensions via ACT is not 
-    allowed on specific nodes
+    Bring a RadCLss DataSet up to the RadCLss Data Object Description.
 
-    therefore, using the stored DOD file for RadCLss, adjust the time 
-    dimension as needed. 
+    The RadCLss dataset is the base: every variable that was actually extracted
+    or matched keeps its own data and attributes. The DOD only supplies the
+    variables that are absent (because an input datastream was missing for the
+    day), the variable ordering, and the global attributes.
 
-    Input
-    -----
-    ds : xarray Dataset
-        The input DOD to have the time variable adjusted
-    
-    ntime : int
-        New dimension to expand or shrink the DOD time dimension to
+    Variables sourced from the DOD are filled with NaN rather than the DOD's
+    own placeholder values, so that on write they take the single declared
+    missing value code instead of a second, undeclared one.
 
-    Output
-    ------
-    adj_ds : xarray Dataset
-        blank dataset containing the DOD metadata adjusted for proper time 
-        dimensions
+    Parameters
+    ----------
+    radclss : Xarray DataSet
+        extracted columns and in-situ sensor file
+    dod : Xarray DataSet
+        expected datastreams and data standards for RadCLss
+
+    Returns
+    -------
+    radclss : Xarray DataSet
+        Corrected RadCLss that has all expected parmeters and attributes
     """
-    # Create a blank DataSet
-    newds = xr.Dataset()
-    
-    # Get the global attributes and add to dataset
-    newds.attrs = ds.attrs
-    if height_fix is True:
-        nskip = ['latitude', 'longitude', 'base_time']
-        nheight = np.arange(3150, 10050, 50)
-    else:
-        nskip = ['lat', 'lon']
+    # Supplied DOD has correct data attributes and all required parameters.
+    # Add any parameter the RadCLss dataset is missing.
+    print("\n Variables not within RadCLss ds:")
+    for var in dod.variables:
+        # Make sure the variable isn't a dimension
+        if var in dod.dims or var in radclss.variables:
+            continue
+        print(var)
+        # Size each dimension from RadCLss where it has one, the DOD otherwise
+        new_size = [radclss.sizes[dim] if dim in radclss.sizes else dod.sizes[dim]
+                    for dim in dod[var].dims]
+        # Fill with NaN so the write encodes the declared missing value code
+        new_array = xr.DataArray(np.full(new_size, np.nan), dims=dod[var].dims)
+        new_array.attrs = dod[var].attrs
+        radclss[var] = new_array
 
-    # Assign the variables to the DataSet, expand the blank arrays to the input int time
-    for var in ds.data_vars:
-        if var not in nskip:
-            if height_fix is True:
-                x = np.full(len(nheight), ds[var].data[0])
-                newds[var] = ('height', x)
-                newds[var].attrs = ds[var].attrs
-            else:
-                if len(ds[var].data.shape) == 4:
-                    x = np.full((ntime, ds[var].data.shape[1],
-                                 ds[var].data.shape[2],
-                                 ds[var].data.shape[3]),
-                                 ds[var].data[0, 0, 0, 0])
-                elif len(ds[var].data.shape) == 3:
-                    x = np.full((ntime, ds[var].data.shape[1],
-                                 ds[var].data.shape[2]), ds[var].data[0, 0, 0])
-                elif len(ds[var].data.shape) == 2:
-                    x = np.full((ntime, ds[var].data.shape[1]), ds[var].data[0, 0])
-                else:
-                    x = np.full((ntime), ds[var].data[0])
-                newds[var] = (ds[var].dims, x)
-                newds[var].attrs = ds[var].attrs
-    if height_fix is True:
-        newds['latitude'] = ds['latitude']
-        newds['longitude'] = ds['longitude']
-    else:
-        # Skipped the variables without time, add those back in
-        newds['lat'] = ds['lat']
-        newds['lon'] = ds['lon']
-    
-    if height_fix is True:
-        newds = newds.assign_coords(height=nheight)
-    else:
-        # Assign Coordinates to the array
-        newds = newds.assign_coords(time=np.arange(0, newds['time'].shape[0]),
-                                    height=np.arange(0, newds['height'].shape[0]),
-                                    station=np.arange(0, 6),
-                                    particle_size=np.arange(0, 32),
-                                    raw_fall_velocity=np.arange(0, 32)
-                                   )
-    
-    return newds
+        del new_size, new_array
+
+    # Carry the DOD attributes onto every variable that came from the inputs,
+    # without discarding the source/units the input datastreams supplied
+    for var in radclss.data_vars:
+        if var in dod.variables:
+            for key, value in dod[var].attrs.items():
+                radclss[var].attrs.setdefault(key, value)
+
+    # Stale time units would otherwise fight the encoding applied on write
+    for var in ('time', 'time_offset', 'base_time'):
+        if var in radclss.variables and 'units' in radclss[var].attrs:
+            del radclss[var].attrs['units']
+
+    # Reorder the DataArrays to match the ARM Data Object Description
+    dod_order = [var for var in dod.variables
+                 if var in radclss.data_vars and var not in radclss.dims]
+    remaining = [var for var in radclss.data_vars if var not in dod_order]
+    radclss = radclss[dod_order + remaining]
+
+    # Update the global attributes
+    radclss.attrs = dict(dod.attrs)
+    radclss.attrs['command_line'] = "python sail_radclss.py --array True"
+    radclss.attrs['dod_version'] = "xprecipradarradclss-c2-1.4"
+    radclss.attrs['site_id'] = "guc"
+    radclss.attrs['platform_id'] = "xprecipradarradclss"
+    radclss.attrs['facility_id'] = "S2"
+    radclss.attrs['data_level'] = "c2"
+    radclss.attrs['location_description'] = ("Surface Atmosphere Integrated Field Laboratory "
+                                             "(SAIL), Crested Butte, Colorado")
+    radclss.attrs['datastream'] = "gucxprecipradarradclssS2.c2"
+    radclss.attrs['input_datastreams'] = ", ".join(['gucxprecipradarcmacppiS2.c1',
+                                                    'gucwbpluvio2M1.a1',
+                                                    'gucmetM1.b1',
+                                                    'gucldM1.b1',
+                                                    'gucldS2.b1',
+                                                    'guc915rwpprecipmeanlowM1.a1',
+                                                    'gucceilM1.b1',
+                                                    'gucsondewnpnM1.b1'])
+    radclss.attrs['history'] = ("created by user jrobrien on machine cumulus.ccs.ornl.gov at "
+                                + str(datetime.datetime.now())
+                                + " using Py-ART and ACT")
+    # `vap_name` is not a permitted attribute for this datastream
+    radclss.attrs.pop('vap_name', None)
+    print("\n")
+    # return radclss, close DOD file
+    del dod
+
+    return radclss
 
 def create_radclss_figure(radclss, height=3500, outdir=None):
     """
@@ -506,7 +636,7 @@ def create_radclss_figure(radclss, height=3500, outdir=None):
     return status
 
 
-def radclss(volumes, serial=True, outdir=None, postprocess=True):
+def radclss(volumes, serial=True, outdir=None, postprocess=True, dod_file=None):
     """
     Extracted Radar Columns and In-Situ Sensors
 
@@ -543,6 +673,9 @@ def radclss(volumes, serial=True, outdir=None, postprocess=True):
     
     postprocess : Boolean, Default = True
         Option of creating timeseries plot for the processed RadCLss file. 
+
+    dod_file : str, Default = None
+        Option to supply a Data Object Description file to verify standards
 
     Returns
     -------
@@ -640,6 +773,16 @@ def radclss(volumes, serial=True, outdir=None, postprocess=True):
         del ds['base_time']
         # Depending on how Dask is behaving, may be to resort time
         ds = ds.sortby("time")
+        # Drop any volume that still falls outside the day being processed, so a
+        # single mis-timed input cannot stretch the file timeline across years.
+        # A day of margin keeps the volume that straddles midnight.
+        day = pd.Timestamp(volumes['date'])
+        in_day = ((ds.time >= day - pd.Timedelta(days=1))
+                  & (ds.time < day + pd.Timedelta(days=2)))
+        if not bool(in_day.all()):
+            print("WARNING: dropping " + str(int((~in_day).sum()))
+                  + " volume(s) outside " + volumes['date'])
+            ds = ds.sel(time=in_day)
         print(volumes['date'] + " finish subset-points: ", time.strftime("%H:%M:%S"))
     
         # Pluvio Weighing Bucket Rain Gauge
@@ -677,33 +820,13 @@ def radclss(volumes, serial=True, outdir=None, postprocess=True):
             ds = match_datasets_act(ds, volumes['ceil'], 'M1', discard=discard_var['ceil'])
         print(volumes['date'] + " finish in-situ match: ", time.strftime("%H:%M:%S"))
 
-        # Will create an xarray dataset which will contain the necessary meta data and variables.
-        out_ds = xr.open_dataset('/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradclssS2.c2/dod/radclss_dod.c2.v1.4.nc')
-        ##out_ds = xr.open_dataset('/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/dod/radclss_dod.c2.v1.4.nc')
-        # update the dod time dimensions with the radclss time
-        out_ds = adjust_dod(out_ds, ds['time'].data.shape[0])
-
         # Transform the matched dataset for consistent dimensions
         if volumes['ld_m1'] or volumes['ld_s2']:
             ds = ds.transpose('time', 'height', 'station', 'particle_size', 'raw_fall_velocity')
         else:
-            ds = ds.transpose("time", "height", "station")
-        # Output Dataset has correct data attributes, supplied by the DOD.
-        # Update the output dataset variable values with the matched dataset.
-        for var in out_ds.variables:
-            if var not in out_ds.dims:
-                # check to see if variable is within the matched dataset
-                # note: it may not be if file is missing.
-                if var in ds.variables:
-                    out_ds[var].data = ds[var].data
-        if volumes['ld_m1'] or volumes['ld_s2']:
-            # Update the coordinates with the matched dataset values
-            out_ds = out_ds.assign_coords(time = ds['time'].data,
-                                          height = ds['height'].data,
-                                          station = ds['station'].data,
-                                          particle_size = ds['particle_size'].data,
-                                          raw_fall_velocity = ds['raw_fall_velocity'].data)
-        else:
+            # The laser disdrometer is the only source of the particle size and
+            # fall velocity dimensions; supply the instrument's bin centres so the
+            # DOD-sourced spectra still land on real coordinates
             default_particle = [0.062,  0.187,  0.312,  0.437,  0.562,  0.687,
                                 0.812,  0.937,  1.062,  1.187,  1.375,  1.625,
                                 1.875,  2.125,  2.375,  2.75,   3.25,   3.75,
@@ -715,34 +838,65 @@ def radclss(volumes, serial=True, outdir=None, postprocess=True):
                                 1.9,   2.2,   2.6,   3.,    3.4,   3.8,   4.4,
                                 5.2,   6.,    6.8,   7.6,   8.8,  10.4,   12.,
                                 13.6,  15.2,  17.6,  20.8 ]
+            ds = ds.transpose("time", "height", "station")
+            ds = ds.assign_coords(particle_size=np.array(default_particle),
+                                  raw_fall_velocity=np.array(default_velocity))
 
-            out_ds = out_ds.assign_coords(time = ds['time'].data,
-                                          height = ds['height'].data,
-                                          station = ds['station'].data,
-                                          particle_size = np.array(default_particle),
-                                          raw_fall_velocity = np.array(default_velocity)
-            )
+        # ---------------------------------------------------------------
+        # Cumulus cannot access the DOD API, Requires locally stored file
+        # ---------------------------------------------------------------
+        if dod_file:
+            try:
+                dod = xr.open_dataset(dod_file)
+                ds = adjust_radclss_dod(ds, dod)
+            except (ValueError, KeyError, OSError) as e:
+                print(f"Error: {e}")
+                print(f"Error type: {type(e).__name__}")
+                print("WARNING: Unable to Verify DOD")
 
-        # write to file
+        # ------------
+        # Save to File
+        # ------------
+        # Coordinates and time variables carry no missing value code
+        keys_to_skip = {'time', 'height', 'station', 'particle_size',
+                        'raw_fall_velocity', 'base_time', 'time_offset'}
+        # Declare the same missing value code that is actually written, as both
+        # the encoded fill and the `missing_value` attribute, for every variable
+        encoding_dict = {}
+        for key in ds.data_vars:
+            if key in keys_to_skip:
+                continue
+            ds[key].attrs['missing_value'] = MISSING_VALUE
+            encoding_dict[key] = {'dtype': 'float64', '_FillValue': MISSING_VALUE}
+
         try:
             if outdir:
-                out_ds.to_netcdf(outdir + 'xprecipradarradclss.c2.' + volumes['date'] + '.000000.nc')
+                out_path = outdir + 'xprecipradarradclss.c2.' + volumes['date'] + '.000000.nc'
             else:
-                out_ds.to_netcdf('xprecipradarradclss.c2.' + volumes['date'] + '.000000.nc')
+                out_path = 'xprecipradarradclss.c2.' + volumes['date'] + '.000000.nc'
+            # Convert DataSet to ACT DataSet for writing
+            ds_out = act.io.WriteDataset(ds)
+            # FillValue=False applies the encodings above rather than plain NaNs
+            ds_out.write_netcdf(path=out_path,
+                                FillValue=False,
+                                encoding=encoding_dict)
+            del ds_out
             status = ": RadCLss SUCCESS: " + volumes['date']
-        except:
+        except (ValueError, OSError) as e:
+            print(f"Error: {e}")
+            print(f"Error type: {type(e).__name__}")
             status = ": RadCLss FAILURE: " + volumes['date']
 
         # create timeseries plot
         if postprocess == True:
             try:
-                plot_status = create_radclss_figure(out_ds, outdir=outdir)
+                plot_status = create_radclss_figure(ds, outdir=outdir)
                 print(plot_status)
             except:
                 print("PLOT FAILURE: " + volumes['date'])
-    
+
         # free up memory
-        del ds, out_ds
+        del ds, encoding_dict
 
     else:
         # There is no column extraction
@@ -840,7 +994,11 @@ def main(args):
             if args.verbose:
                 print("serial - ", args.serial)
                 print(volumes['date'][i], nvol["radar"])
-            status = radclss(nvol, outdir=out_path, serial=args.serial)
+            status = radclss(nvol,
+                             outdir=out_path,
+                             serial=args.serial,
+                             postprocess=args.postproc,
+                             dod_file=args.dod_file)
             print(status)
  
     print("processing finished: ", time.strftime("%H:%M:%S"))
@@ -892,6 +1050,12 @@ if __name__ == "__main__":
                         dest="verbose",
                         type=bool,
                         help="[bool|default=False] Display file paths"
+    )
+    parser.add_argument("--dod_file",
+                        default='/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradclssS2.c2/dod/radclss_dod.c2.v1.4.nc',
+                        dest="dod_file",
+                        type=str,
+                        help="[str] RadCLss DOD file"
     )
     args = parser.parse_args()
 
