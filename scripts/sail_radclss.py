@@ -440,12 +440,27 @@ def adjust_radclss_dod(radclss, dod):
 
         del new_size, new_array
 
-    # `alt` is a per-station constant; the DOD carries a redundant time
-    # dimension on it that the shipped files do not
-    if 'alt' in radclss.variables and 'time' in radclss['alt'].dims:
-        attrs = radclss['alt'].attrs
-        radclss['alt'] = radclss['alt'].isel(time=0, drop=True)
-        radclss['alt'].attrs = attrs
+    # Conform variable dimensions to the DOD. Two things pull them off:
+    # concatenating the volumes into a daily file broadcasts per-station
+    # constants such as lat/lon across time, and instrument bin descriptors
+    # such as class_size_width arrive without the time dimension the DOD
+    # defines. Both are constant along the dimension in question.
+    for var in radclss.data_vars:
+        if var not in dod.variables:
+            continue
+        target = dod[var].dims
+        if radclss[var].dims == target:
+            continue
+        da = radclss[var]
+        # Drop the dimensions the DOD does not define
+        for dim in da.dims:
+            if dim not in target:
+                da = da.isel({dim: 0}, drop=True)
+        # Add the dimensions the DOD defines that the input did not carry
+        missing = {dim: radclss.sizes[dim] for dim in target if dim not in da.dims}
+        if missing:
+            da = da.expand_dims(missing)
+        radclss[var] = da.transpose(*target)
 
     # The DOD is authoritative for data variable attributes. Taking the input
     # datastream's attributes instead would carry over valid_min/valid_max/
