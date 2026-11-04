@@ -3,6 +3,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
+import os
 import glob
 import time
 import datetime
@@ -681,7 +682,8 @@ def create_radclss_figure(radclss, height=3500, outdir=None):
     return status
 
 
-def radclss(volumes, serial=True, outdir=None, postprocess=True, dod_file=None):
+def radclss(volumes, serial=True, outdir=None, postprocess=True, dod_file=None,
+            plotdir=None):
     """
     Extracted Radar Columns and In-Situ Sensors
 
@@ -721,6 +723,10 @@ def radclss(volumes, serial=True, outdir=None, postprocess=True, dod_file=None):
 
     dod_file : str, Default = None
         Option to supply a Data Object Description file to verify standards
+
+    plotdir : str, Default = None
+        Location to write the timeseries quicklook to. Defaults to a
+        `quicklooks` directory alongside the RadCLss files.
 
     Returns
     -------
@@ -947,7 +953,9 @@ def radclss(volumes, serial=True, outdir=None, postprocess=True, dod_file=None):
         # create timeseries plot
         if postprocess == True:
             try:
-                plot_status = create_radclss_figure(ds, outdir=outdir)
+                if plotdir is None and outdir:
+                    plotdir = os.path.join(outdir, 'quicklooks', '')
+                plot_status = create_radclss_figure(ds, outdir=plotdir)
                 print(plot_status)
             except:
                 print("PLOT FAILURE: " + volumes['date'])
@@ -969,9 +977,15 @@ def main(args):
     # Define the directory where the CSU-X Band CMAC2.0 files are located.
     ##RADAR_DIR = '/Users/jrobrien/ANL/Instruments/CSU-XPrecipRadar/cmac_v3_with_cals/%s/' % ndate
     RADAR_DIR = '/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradarcmacS2.c1/ppi/%s/' % ndate
-    out_path = args.outdir + '/%s/' % ndate
+    # All RadCLss files are written to a single directory; os.path.join with an
+    # empty final component guarantees the trailing separator the filenames need
+    out_path = os.path.join(args.outdir, '')
+    # Timeseries quicklooks are kept out of the data directory so that only
+    # the netCDF files sit in the location that gets shipped
+    plot_path = os.path.join(args.outdir, 'quicklooks', '')
     print("RADAR DIR: ", RADAR_DIR)
     print("OUTPATH: ", out_path)
+    print("PLOTPATH: ", plot_path)
     print("VERBOSE: ", args.verbose)
 
     # Define an output directory for downloaded ground instrumentation
@@ -1055,7 +1069,8 @@ def main(args):
                              outdir=out_path,
                              serial=args.serial,
                              postprocess=args.postproc,
-                             dod_file=args.dod_file)
+                             dod_file=args.dod_file,
+                             plotdir=plot_path)
             print(status)
  
     print("processing finished: ", time.strftime("%H:%M:%S"))
@@ -1091,7 +1106,7 @@ if __name__ == "__main__":
                         help="[bool|default=False] Process in Serial for testing"
     )
     parser.add_argument("--outdir",
-                        default='/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradclssS2.c2',
+                        default='/gpfs/wolf2/arm/atm124/world-shared/gucxprecipradclssS2.c2/',
                         dest='outdir',
                         type=str,
                         help="[str] Specific directory to write RadCLss to"
