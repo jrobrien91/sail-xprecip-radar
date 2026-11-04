@@ -207,9 +207,6 @@ def subset_points(nfile, **kwargs):
         # Concatenate the extracted radar columns for this scan across all sites
         ds = xr.concat(column_list, dim='station')
         ds["station"] = sites
-        # lat/lon are per-station constants; strip the redundant time dimension
-        ds["lat"] = ds["lat"].isel(time=0, drop=True)
-        ds["lon"] = ds["lon"].isel(time=0, drop=True)
         # Add attributes for Time, Latitude, Longitude, and Sites
         ds.time.attrs.update(long_name=('Time in Seconds that Cooresponds to the Start'
                                         + " of each Individual Radar Volume Scan before"
