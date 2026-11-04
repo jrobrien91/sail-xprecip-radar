@@ -33,6 +33,11 @@ import act
 # ground-instrument matching can never drift apart.
 RADCLSS_HEIGHTS = np.arange(3150, 10050, 50)
 
+# Datastream name. Used for both the `datastream` global attribute and the
+# output filename, so the two can never disagree with each other or with the
+# names the shipped files already carry.
+DATASTREAM = "gucxprecipradarradclssS2.c2"
+
 # Missing value code declared by the RadCLss DOD (xprecipradarradclss-c2).
 # Every variable is written with this as both `_FillValue` and `missing_value`
 # so the declared value always matches what is actually stored in the file.
@@ -51,6 +56,21 @@ SUM_VARS = frozenset({
     "tbrg_precip_total",
     "tbrg_precip_total_corr",
 })
+
+# Attributes for the coordinate variables. The DOD holds only placeholder
+# entries for these, so they are set here to match the shipped files.
+COORD_ATTRS = {
+    'time': {'long_name': 'Time offset from midnight',
+             'standard_name': 'time'},
+    'height': {'long_name': 'Height of the measurement volume',
+               'units': 'm',
+               'standard_name': 'height'},
+    'station': {'long_name': 'Location of surface in-situ observations'},
+    'particle_size': {'long_name': 'Particle class size average',
+                      'units': 'mm'},
+    'raw_fall_velocity': {'long_name': 'Fall velocity classes observed by Parsivel2',
+                          'units': 'm/s'},
+}
 
 #-----------------
 # Define Functions
@@ -422,23 +442,48 @@ def adjust_radclss_dod(radclss, dod):
 
         del new_size, new_array
 
-    # Carry the DOD attributes onto every variable that came from the inputs,
-    # without discarding the source/units the input datastreams supplied
+    # `alt` is a per-station constant; the DOD carries a redundant time
+    # dimension on it that the shipped files do not
+    if 'alt' in radclss.variables and 'time' in radclss['alt'].dims:
+        attrs = radclss['alt'].attrs
+        radclss['alt'] = radclss['alt'].isel(time=0, drop=True)
+        radclss['alt'].attrs = attrs
+
+    # The DOD is authoritative for data variable attributes. Taking the input
+    # datastream's attributes instead would carry over valid_min/valid_max/
+    # valid_delta that no longer describe the 5 minute resampled values.
+    # Coordinates are excluded: the DOD holds placeholder entries for them.
     for var in radclss.data_vars:
-        if var in dod.variables:
-            for key, value in dod[var].attrs.items():
-                radclss[var].attrs.setdefault(key, value)
+        if var not in dod.variables:
+            continue
+        source = radclss[var].attrs.get('source')
+        radclss[var].attrs = dict(dod[var].attrs)
+        if source is not None:
+            radclss[var].attrs.setdefault('source', source)
+
+    # Coordinate attributes, matching the shipped files
+    for var, attrs in COORD_ATTRS.items():
+        if var in radclss.variables:
+            radclss[var].attrs = dict(attrs)
 
     # Stale time units would otherwise fight the encoding applied on write
     for var in ('time', 'time_offset', 'base_time'):
         if var in radclss.variables and 'units' in radclss[var].attrs:
             del radclss[var].attrs['units']
 
-    # Reorder the DataArrays to match the ARM Data Object Description
+    # Anything the DOD does not define is not part of this datastream
+    extra = [var for var in radclss.data_vars if var not in dod.variables]
+    if extra:
+        print(" Dropping variables not defined by the DOD: " + ", ".join(extra))
+        radclss = radclss.drop_vars(extra)
+
+    # Reorder the DataArrays to match the ARM Data Object Description, which
+    # puts the station location variables last as lat/lon/alt. The shipped
+    # files carry alt/lat/lon, an artefact of a post-hoc correction; the DOD
+    # order is the approved one and is what is written here.
     dod_order = [var for var in dod.variables
                  if var in radclss.data_vars and var not in radclss.dims]
-    remaining = [var for var in radclss.data_vars if var not in dod_order]
-    radclss = radclss[dod_order + remaining]
+    radclss = radclss[dod_order]
 
     # Update the global attributes
     radclss.attrs = dict(dod.attrs)
@@ -450,7 +495,10 @@ def adjust_radclss_dod(radclss, dod):
     radclss.attrs['data_level'] = "c2"
     radclss.attrs['location_description'] = ("Surface Atmosphere Integrated Field Laboratory "
                                              "(SAIL), Crested Butte, Colorado")
-    radclss.attrs['datastream'] = "gucxprecipradarradclssS2.c2"
+    radclss.attrs['datastream'] = DATASTREAM
+    # Single delimited string, matching how `field_names` lists its values in
+    # this same DOD. The shipped files store this as a vector-valued attribute
+    # with one element per datastream.
     radclss.attrs['input_datastreams'] = ", ".join(['gucxprecipradarcmacppiS2.c1',
                                                     'gucwbpluvio2M1.a1',
                                                     'gucmetM1.b1',
@@ -708,6 +756,7 @@ def radclss(volumes, serial=True, outdir=None, postprocess=True, dod_file=None):
                             'qc_tbrg_precip_total_corr', 'qc_logger_volt', 
                             'qc_logger_temp', 'qc_atmos_pressure', 
                             'pwd_pw_code_inst', 'pwd_pw_code_15min', 'pwd_pw_code_1hr', 
+                            'pwd_err_code',
                    ],
                    'RWP' : ['base_time', 'time_offset', 'time_bounds', 
                             'height_bounds', 'vertical_wind_speed_count',
@@ -839,8 +888,9 @@ def radclss(volumes, serial=True, outdir=None, postprocess=True, dod_file=None):
                                 5.2,   6.,    6.8,   7.6,   8.8,  10.4,   12.,
                                 13.6,  15.2,  17.6,  20.8 ]
             ds = ds.transpose("time", "height", "station")
-            ds = ds.assign_coords(particle_size=np.array(default_particle),
-                                  raw_fall_velocity=np.array(default_velocity))
+            ds = ds.assign_coords(
+                particle_size=np.array(default_particle, dtype='float32'),
+                raw_fall_velocity=np.array(default_velocity, dtype='float32'))
 
         # ---------------------------------------------------------------
         # Cumulus cannot access the DOD API, Requires locally stored file
@@ -868,12 +918,22 @@ def radclss(volumes, serial=True, outdir=None, postprocess=True, dod_file=None):
                 continue
             ds[key].attrs['missing_value'] = MISSING_VALUE
             encoding_dict[key] = {'dtype': 'float64', '_FillValue': MISSING_VALUE}
+        # Coordinates keep their own types; pin them so a day without the laser
+        # disdrometer writes the same types as a day with it
+        for key in ('particle_size', 'raw_fall_velocity'):
+            if key in ds.coords:
+                encoding_dict[key] = {'dtype': 'float32', '_FillValue': np.float32(np.nan)}
+        encoding_dict['time'] = {
+            'dtype': 'int64',
+            'calendar': 'proleptic_gregorian',
+            'units': 'milliseconds since ' + pd.Timestamp(ds.time.values[0]).isoformat(),
+        }
 
         try:
             if outdir:
-                out_path = outdir + 'xprecipradarradclss.c2.' + volumes['date'] + '.000000.nc'
+                out_path = outdir + DATASTREAM + '.' + volumes['date'] + '.000000.nc'
             else:
-                out_path = 'xprecipradarradclss.c2.' + volumes['date'] + '.000000.nc'
+                out_path = DATASTREAM + '.' + volumes['date'] + '.000000.nc'
             # Convert DataSet to ACT DataSet for writing
             ds_out = act.io.WriteDataset(ds)
             # FillValue=False applies the encodings above rather than plain NaNs
