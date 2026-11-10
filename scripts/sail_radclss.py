@@ -223,6 +223,28 @@ def subset_points(nfile, **kwargs):
         del radar, column_list, da
     return ds
 
+def first_path(ground):
+    """
+    Return the first file path from an in-situ entry.
+
+    ACT accepts either a single path or a list of them, so the entries in the
+    volumes dictionary can legitimately be either. Indexing `[0]` directly
+    would take the first character of a string rather than the first path.
+
+    Parameters
+    ----------
+    ground : str, PathLike or list
+        A file path, or a list of file paths
+
+    Returns
+    -------
+    path : str
+        The first path in the entry
+    """
+    if isinstance(ground, (str, os.PathLike)):
+        return str(ground)
+    return str(ground[0])
+
 def volume_time(nfile, radar):
     """
     Determine the start time of a radar volume, cross-checked against the
@@ -314,6 +336,13 @@ def match_datasets_act(column, ground, site, discard, resample='auto', DataSet=F
     if DataSet == True:
         grd_ds = ground
     else:
+        # Always hand ACT a list of paths. A bare string is treated as a glob
+        # pattern by xarray, so a path holding a glob character ('[', ']', '*',
+        # '?') matches nothing and raises "no files to open" even though the
+        # file is there. A list is used verbatim, and a genuinely missing file
+        # then raises FileNotFoundError naming it.
+        if isinstance(ground, (str, os.PathLike)):
+            ground = [ground]
         # Read in the file using ACT
         grd_ds = act.io.read_arm_netcdf(ground, cleanup_qc=True, drop_variables=discard)
         # Default are Lazy Arrays; convert for matching with column
@@ -854,28 +883,28 @@ def radclss(volumes, serial=True, outdir=None, postprocess=True, dod_file=None,
     
         # Pluvio Weighing Bucket Rain Gauge
         if volumes['pluvio']:
-            pluv_site = volumes['pluvio'][0].split('gucwbpluvio2')[-1].split('.')[0]
+            pluv_site = first_path(volumes['pluvio']).split('gucwbpluvio2')[-1].split('.')[0]
             # Call Match Datasets ACT
-            ds = match_datasets_act(ds, volumes['pluvio'][0], pluv_site, discard=discard_var['Pluvio'])
+            ds = match_datasets_act(ds, volumes['pluvio'], pluv_site, discard=discard_var['Pluvio'])
             del pluv_site
 
         if volumes['met']:
             # Surface Meteorological Station
-            met_site = volumes['met'][0].split('gucmet')[-1].split('.')[0]
+            met_site = first_path(volumes['met']).split('gucmet')[-1].split('.')[0]
             # Call Match Datasets ACT
-            ds = match_datasets_act(ds, volumes['met'][0], met_site, discard=discard_var['Met'])
+            ds = match_datasets_act(ds, volumes['met'], met_site, discard=discard_var['Met'])
             del met_site
 
         if volumes['ld_m1']:
             # Laser Disdrometer - Main Site
-            ld_m1 = volumes['ld_m1'][0].split('gucld')[-1].split('.')[0]
-            ds = match_datasets_act(ds, volumes['ld_m1'][0], ld_m1, discard=discard_var['LD'])
+            ld_m1 = first_path(volumes['ld_m1']).split('gucld')[-1].split('.')[0]
+            ds = match_datasets_act(ds, volumes['ld_m1'], ld_m1, discard=discard_var['LD'])
             del ld_m1
 
         if volumes['ld_s2']:
             # Laser Disdrometer - Supplemental Site
-            ld_s2 = volumes['ld_s2'][0].split('gucld')[-1].split('.')[0]
-            ds = match_datasets_act(ds, volumes['ld_s2'][0], ld_s2, discard=discard_var['LD'])
+            ld_s2 = first_path(volumes['ld_s2']).split('gucld')[-1].split('.')[0]
+            ds = match_datasets_act(ds, volumes['ld_s2'], ld_s2, discard=discard_var['LD'])
             del ld_s2
 
         if volumes['rwp']:
