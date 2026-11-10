@@ -592,7 +592,7 @@ def create_radclss_figure(radclss, height=3500, outdir=None):
     #--------------------------------
     # Plot A - M1 Column Reflectivity
     #--------------------------------
-    dbz_plot = radclss.sel(station="M1").corrected_reflectivity.plot(cmap='pyart_HomeyerRainbow',
+    dbz_plot = radclss.sel(station="M1").corrected_reflectivity.plot(cmap='HomeyerRainbow',
                                                                      vmin=-20,
                                                                      vmax=40,
                                                                      ax=ax1,
@@ -624,7 +624,7 @@ def create_radclss_figure(radclss, height=3500, outdir=None):
     dsd_plot = radclss.sel(station="M1").number_density_drops.plot(x="time",
                                                                    y="particle_size",
                                                                    norm=norm,
-                                                                   cmap="pyart_HomeyerRainbow",
+                                                                   cmap="HomeyerRainbow",
                                                                    add_colorbar=False,
                                                                    ax=ax2,
         )
